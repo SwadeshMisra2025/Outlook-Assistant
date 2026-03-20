@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Outlook Assistant - General Edition</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Fraunces:opsz,wght@9..144,600&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="bg-orb orb-a"></div>
+    <div class="bg-orb orb-b"></div>
+
+    <main class="shell">
+      <section class="hero">
+        <p class="tag">First Product - General Edition</p>
+        <h1>Outlook Assistant</h1>
+        <p class="subtitle">Hybrid intelligence for personal work history: reliable counts plus grounded narrative answers.</p>
+      </section>
+
+      <section class="panel">
+        <div class="row">
+          <label for="query">Ask</label>
+          <textarea id="query" placeholder="Example: summarize my ABGL work and include total meetings in 2025"></textarea>
+        </div>
+
+        <div class="actions">
+          <button id="run-search">Run Hybrid Search</button>
+          <button id="load-metrics" class="ghost">Load Metrics</button>
+          <button id="health-check" class="ghost">Health Check</button>
+        </div>
+
+        <div class="status" id="status">Ready.</div>
+
+        <div class="chat-box">
+          <h3>Conversation</h3>
+          <p class="hint">Session ID: <span id="session-id">(new session)</span></p>
+          <textarea id="chat-message" placeholder="Continue the conversation here..."></textarea>
+          <div class="actions">
+            <button id="send-chat" class="ghost">Send Message</button>
+          </div>
+          <pre id="chat-history">-</pre>
+        </div>
+
+        <div class="result-grid">
+          <article>
+            <h3>Answer</h3>
+            <pre id="answer">-</pre>
+          </article>
+          <article>
+            <h3>Metadata</h3>
+            <pre id="meta">-</pre>
+          </article>
+        </div>
+
+        <div class="metrics-grid">
+          <article>
+            <h3>Emails by Sender</h3>
+            <canvas id="sender-chart"></canvas>
+          </article>
+          <article>
+            <h3>Email Participation Mix</h3>
+            <canvas id="email-mix-chart"></canvas>
+          </article>
+          <article>
+            <h3>Meeting Participation Mix</h3>
+            <canvas id="meeting-mix-chart"></canvas>
+          </article>
+          <article>
+            <h3>Metrics Metadata</h3>
+            <pre id="metrics-meta">-</pre>
+          </article>
+          <article>
+            <h3>Completeness Feedback</h3>
+            <p class="hint">Rate semantic answer completeness from 1 (low) to 5 (high).</p>
+            <div class="feedback-row">
+              <label for="feedback-score">Score</label>
+              <input id="feedback-score" type="range" min="1" max="5" value="4" />
+              <span id="feedback-score-value">4</span>
+            </div>
+            <textarea id="feedback-comment" placeholder="Optional note on what was missing"></textarea>
+            <div class="actions">
+              <button id="submit-feedback" class="ghost">Submit Feedback</button>
+              <button id="load-completeness" class="ghost">Load Completeness Chart</button>
+            </div>
+            <canvas id="completeness-chart"></canvas>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
