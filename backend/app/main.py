@@ -3,8 +3,11 @@ import os
 import sqlite3
 from typing import Any
 import uuid
+from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 
@@ -24,15 +27,48 @@ class CompletenessFeedbackRequest(BaseModel):
     comment: str = ""
 
 
+class AdminLoadRequest(BaseModel):
+    mode: Literal["incremental", "full"] = "incremental"
+
+
 app = FastAPI(
     title="Outlook Assistant - General Edition API",
     version="0.1.0",
     description="Foundation API for hybrid SQL + semantic search architecture.",
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://127.0.0.1:3001",
+        "http://localhost:3001",
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 def _db_path() -> str:
     return os.getenv("SQLITE_PATH", "./data/local_search.db")
+
+
+def _source_db_path() -> str | None:
+    explicit = os.getenv("SOURCE_SQLITE_PATH")
+    if explicit and os.path.exists(explicit):
+        return explicit
+
+    cwd = Path.cwd()
+    candidates = [
+        cwd / ".." / ".." / "Dev1" / "backend" / "local_search.db",
+        cwd / ".." / ".." / ".." / "Dev1" / "backend" / "local_search.db",
+    ]
+    for c in candidates:
+        if c.exists():
+            return str(c.resolve())
+    return None
 
 
 def _tracking_db_path() -> str:
@@ -89,9 +125,170 @@ def _init_tracking_tables() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS admin_load_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                mode TEXT NOT NULL,
+                source_db TEXT,
+                target_db TEXT NOT NULL,
+                status TEXT NOT NULL,
+                details_json TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         conn.commit()
     finally:
         conn.close()
+
+
+def _record_admin_run(mode: str, source_db: str | None, target_db: str, status: str, details_json: str) -> None:
+    conn = _tracking_conn()
+    try:
+        conn.execute(
+            """
+            INSERT INTO admin_load_runs (mode, source_db, target_db, status, details_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (mode, source_db, target_db, status, details_json, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _list_source_tables(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    return [str(r[0]) for r in rows]
+
+
+def _ensure_target_table_from_source(src_conn: sqlite3.Connection, dst_conn: sqlite3.Connection, table_name: str) -> None:
+    row = src_conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone()
+    if not row or not row[0]:
+        return
+    dst_conn.execute(row[0])
+
+
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
+    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return [str(r[1]) for r in rows]
+
+
+def _copy_full_table(src_conn: sqlite3.Connection, dst_conn: sqlite3.Connection, table_name: str) -> int:
+    dst_conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+    _ensure_target_table_from_source(src_conn, dst_conn, table_name)
+    cols = _table_columns(src_conn, table_name)
+    if not cols:
+        return 0
+    col_csv = ", ".join(cols)
+    ph = ", ".join(["?" for _ in cols])
+    rows = src_conn.execute(f"SELECT {col_csv} FROM {table_name}").fetchall()
+    if rows:
+        dst_conn.executemany(
+            f"INSERT INTO {table_name} ({col_csv}) VALUES ({ph})",
+            rows,
+        )
+    return len(rows)
+
+
+def _copy_incremental_table(src_conn: sqlite3.Connection, dst_conn: sqlite3.Connection, table_name: str) -> tuple[int, str]:
+    _ensure_target_table_from_source(src_conn, dst_conn, table_name)
+    cols = _table_columns(src_conn, table_name)
+    if not cols:
+        return 0, "no_columns"
+
+    col_csv = ", ".join(cols)
+    ph = ", ".join(["?" for _ in cols])
+    lower = {c.lower() for c in cols}
+
+    if "id" in lower:
+        id_col = next(c for c in cols if c.lower() == "id")
+        max_target = dst_conn.execute(f"SELECT COALESCE(MAX({id_col}), 0) FROM {table_name}").fetchone()[0]
+        rows = src_conn.execute(
+            f"SELECT {col_csv} FROM {table_name} WHERE {id_col} > ? ORDER BY {id_col}",
+            (max_target,),
+        ).fetchall()
+        if rows:
+            dst_conn.executemany(
+                f"INSERT INTO {table_name} ({col_csv}) VALUES ({ph})",
+                rows,
+            )
+        return len(rows), f"id>{max_target}"
+
+    ts_candidates = ["received_at", "sent_at", "created_at", "start_time", "start"]
+    ts_col = next((c for c in cols if c.lower() in ts_candidates), None)
+    if ts_col:
+        max_target = dst_conn.execute(f"SELECT COALESCE(MAX({ts_col}), '') FROM {table_name}").fetchone()[0]
+        rows = src_conn.execute(
+            f"SELECT {col_csv} FROM {table_name} WHERE {ts_col} > ? ORDER BY {ts_col}",
+            (max_target,),
+        ).fetchall()
+        if rows:
+            dst_conn.executemany(
+                f"INSERT INTO {table_name} ({col_csv}) VALUES ({ph})",
+                rows,
+            )
+        return len(rows), f"{ts_col}>{max_target}"
+
+    return 0, "no_incremental_key"
+
+
+def _run_admin_load(mode: str) -> dict[str, Any]:
+    source_path = _source_db_path()
+    target_path = _db_path()
+    _ensure_parent_dir(target_path)
+
+    if not source_path:
+        return {
+            "status": "error",
+            "message": "No source SQLite found. Set SOURCE_SQLITE_PATH or keep Dev1 backend DB available.",
+            "source_db": None,
+            "target_db": target_path,
+            "tables": [],
+        }
+
+    src_conn = sqlite3.connect(source_path)
+    dst_conn = sqlite3.connect(target_path)
+
+    try:
+        src_tables = set(_list_source_tables(src_conn))
+        preferred = [
+            "emails",
+            "meetings",
+            "teams_messages",
+            "teams_channel_messages",
+            "email_attachments",
+        ]
+        tables = [t for t in preferred if t in src_tables]
+
+        details = []
+        for t in tables:
+            if mode == "full":
+                inserted = _copy_full_table(src_conn, dst_conn, t)
+                details.append({"table": t, "inserted": inserted, "strategy": "replace_all"})
+            else:
+                inserted, key = _copy_incremental_table(src_conn, dst_conn, t)
+                details.append({"table": t, "inserted": inserted, "strategy": key})
+
+        dst_conn.commit()
+
+        return {
+            "status": "ok",
+            "mode": mode,
+            "source_db": source_path,
+            "target_db": target_path,
+            "tables": details,
+            "loaded_at": datetime.now(timezone.utc).isoformat(),
+        }
+    finally:
+        src_conn.close()
+        dst_conn.close()
 
 
 def _log_semantic_query(query_id: str, query_text: str, top_k: int, mode: str) -> None:
@@ -316,6 +513,149 @@ def health() -> dict:
         "service": "outlook-assistant-general-edition",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@app.get("/api/architecture")
+def architecture() -> dict[str, Any]:
+    return {
+        "name": "Outlook Assistant - General Edition",
+        "version": "0.1.0",
+        "flow": [
+            "Source ingestion (Outlook/Graph)",
+            "SQL facts lane (counts, deterministic analytics)",
+            "Semantic lane (chunk + embed + vector retrieval)",
+            "Hybrid orchestration (parallel SQL + semantic)",
+            "Grounded synthesis with citations + numeric facts",
+            "Feedback loop (completeness scoring + query tracking)",
+        ],
+        "components": {
+            "api": {
+                "health": "/api/health",
+                "search": "/api/search",
+                "chat": "/api/chat/message",
+                "metrics": "/api/metrics",
+                "completeness": "/api/metrics/completeness",
+            },
+            "data": {
+                "sql_path": _db_path(),
+                "tracking_path": _tracking_db_path(),
+            },
+        },
+        "modes": ["sql", "semantic", "hybrid"],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/technology-map")
+def technology_map() -> dict[str, Any]:
+    return {
+        "title": "Outlook Assistant Technology Flow",
+        "objective": "Help local builders understand architecture, stack choices, and high-impact improvement areas.",
+        "stages": [
+            {
+                "name": "1) Ingestion",
+                "purpose": "Pull raw activity from Outlook/Graph into local processing lanes.",
+                "technologies": ["Outlook COM", "Microsoft Graph", "Python connectors"],
+                "current_state": "Planned in this repo scaffold; implemented in prior prototype iterations.",
+                "improvements": [
+                    "Add incremental sync using watermarks.",
+                    "Capture attachment text extraction pipeline.",
+                    "Track per-source ingestion failure queue.",
+                ],
+            },
+            {
+                "name": "2) SQL Facts Lane",
+                "purpose": "Answer deterministic count and numeric analytics queries.",
+                "technologies": ["SQLite", "SQL aggregations", "FastAPI"],
+                "current_state": "Metrics endpoint supports sender/participant analytics patterns.",
+                "improvements": [
+                    "Add schema migration tooling.",
+                    "Add reusable query templates for common business questions.",
+                    "Add metric cache for expensive aggregations.",
+                ],
+            },
+            {
+                "name": "3) Semantic Lane",
+                "purpose": "Retrieve context-rich evidence for narrative and exploratory questions.",
+                "technologies": ["Chunking", "Embeddings", "ChromaDB", "Ollama"],
+                "current_state": "Designed as target lane; placeholder in current scaffold search output.",
+                "improvements": [
+                    "Implement direct-source historical chunk backfill.",
+                    "Add retrieval evaluation set (precision, recall, coverage).",
+                    "Add metadata filters for people, date, project.",
+                ],
+            },
+            {
+                "name": "4) Orchestration",
+                "purpose": "Select SQL/semantic/hybrid and merge outputs into one grounded answer.",
+                "technologies": ["FastAPI routing", "Execution planner", "Hybrid synthesis"],
+                "current_state": "Mode routing placeholder currently implemented.",
+                "improvements": [
+                    "Parallelize SQL and semantic fetch in hybrid mode.",
+                    "Lock numeric facts from SQL before generation.",
+                    "Return confidence and citation coverage score.",
+                ],
+            },
+            {
+                "name": "5) Conversation and Feedback",
+                "purpose": "Persist user sessions and measure answer completeness.",
+                "technologies": ["Tracking SQLite", "Session history", "Feedback analytics"],
+                "current_state": "Chat message logging and completeness scoring are implemented.",
+                "improvements": [
+                    "Turn low completeness into automatic follow-up retrieval.",
+                    "Add per-user quality trend dashboards.",
+                    "Add feedback labels (missing source, wrong count, stale context).",
+                ],
+            },
+        ],
+        "local_build_path": [
+            "Run backend (FastAPI + uvicorn)",
+            "Serve frontend static UI",
+            "Use Technology tab to inspect architecture and staged improvements",
+            "Implement one stage at a time and validate through metrics/completeness",
+        ],
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/admin/load-status")
+def admin_load_status() -> dict[str, Any]:
+    conn = _tracking_conn()
+    try:
+        rows = conn.execute(
+            "SELECT id, mode, source_db, target_db, status, details_json, created_at FROM admin_load_runs ORDER BY id DESC LIMIT 10"
+        ).fetchall()
+        return {
+            "source_db_detected": _source_db_path(),
+            "target_db": _db_path(),
+            "recent_runs": [
+                {
+                    "id": r["id"],
+                    "mode": r["mode"],
+                    "source_db": r["source_db"],
+                    "target_db": r["target_db"],
+                    "status": r["status"],
+                    "details_json": r["details_json"],
+                    "created_at": r["created_at"],
+                }
+                for r in rows
+            ],
+        }
+    finally:
+        conn.close()
+
+
+@app.post("/api/admin/load")
+def admin_load(req: AdminLoadRequest) -> dict[str, Any]:
+    payload = _run_admin_load(mode=req.mode)
+    _record_admin_run(
+        mode=req.mode,
+        source_db=payload.get("source_db"),
+        target_db=payload.get("target_db", _db_path()),
+        status=payload.get("status", "unknown"),
+        details_json=str(payload),
+    )
+    return payload
 
 
 @app.get("/api/metrics")

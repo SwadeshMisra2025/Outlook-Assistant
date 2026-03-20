@@ -21,73 +21,126 @@
       </section>
 
       <section class="panel">
-        <div class="row">
-          <label for="query">Ask</label>
-          <textarea id="query" placeholder="Example: summarize my ABGL work and include total meetings in 2025"></textarea>
+        <div class="tab-strip">
+          <button id="tab-workbench" class="tab-btn active">Workbench</button>
+          <button id="tab-architecture" class="tab-btn">Architecture</button>
+          <button id="tab-technology" class="tab-btn">Technology and Flow</button>
+          <button id="tab-admin" class="tab-btn">Admin</button>
         </div>
 
-        <div class="actions">
-          <button id="run-search">Run Hybrid Search</button>
-          <button id="load-metrics" class="ghost">Load Metrics</button>
-          <button id="health-check" class="ghost">Health Check</button>
-        </div>
-
-        <div class="status" id="status">Ready.</div>
-
-        <div class="chat-box">
-          <h3>Conversation</h3>
-          <p class="hint">Session ID: <span id="session-id">(new session)</span></p>
-          <textarea id="chat-message" placeholder="Continue the conversation here..."></textarea>
-          <div class="actions">
-            <button id="send-chat" class="ghost">Send Message</button>
+        <section id="panel-workbench" class="tab-panel active">
+          <div class="row">
+            <label for="query">Ask</label>
+            <textarea id="query" placeholder="Example: summarize my ABGL work and include total meetings in 2025"></textarea>
           </div>
-          <pre id="chat-history">-</pre>
-        </div>
 
-        <div class="result-grid">
-          <article>
-            <h3>Answer</h3>
-            <pre id="answer">-</pre>
-          </article>
-          <article>
-            <h3>Metadata</h3>
-            <pre id="meta">-</pre>
-          </article>
-        </div>
+          <div class="actions">
+            <button id="run-search">Run Hybrid Search</button>
+            <button id="load-metrics" class="ghost">Load Metrics</button>
+            <button id="health-check" class="ghost">Health Check</button>
+          </div>
 
-        <div class="metrics-grid">
-          <article>
-            <h3>Emails by Sender</h3>
-            <canvas id="sender-chart"></canvas>
-          </article>
-          <article>
-            <h3>Email Participation Mix</h3>
-            <canvas id="email-mix-chart"></canvas>
-          </article>
-          <article>
-            <h3>Meeting Participation Mix</h3>
-            <canvas id="meeting-mix-chart"></canvas>
-          </article>
-          <article>
-            <h3>Metrics Metadata</h3>
-            <pre id="metrics-meta">-</pre>
-          </article>
-          <article>
-            <h3>Completeness Feedback</h3>
-            <p class="hint">Rate semantic answer completeness from 1 (low) to 5 (high).</p>
-            <div class="feedback-row">
-              <label for="feedback-score">Score</label>
-              <input id="feedback-score" type="range" min="1" max="5" value="4" />
-              <span id="feedback-score-value">4</span>
-            </div>
-            <textarea id="feedback-comment" placeholder="Optional note on what was missing"></textarea>
+          <div class="status" id="status">Ready.</div>
+
+          <div class="chat-box">
+            <h3>Conversation</h3>
+            <p class="hint">Session ID: <span id="session-id">(new session)</span></p>
+            <textarea id="chat-message" placeholder="Continue the conversation here..."></textarea>
             <div class="actions">
-              <button id="submit-feedback" class="ghost">Submit Feedback</button>
-              <button id="load-completeness" class="ghost">Load Completeness Chart</button>
+              <button id="send-chat" class="ghost">Send Message</button>
             </div>
-            <canvas id="completeness-chart"></canvas>
+            <pre id="chat-history">-</pre>
+          </div>
+
+          <div class="result-grid">
+            <article>
+              <h3>Answer</h3>
+              <pre id="answer">-</pre>
+            </article>
+            <article>
+              <h3>Metadata</h3>
+              <pre id="meta">-</pre>
+            </article>
+          </div>
+
+          <div class="metrics-grid">
+            <article>
+              <h3>Emails by Sender</h3>
+              <canvas id="sender-chart"></canvas>
+            </article>
+            <article>
+              <h3>Email Participation Mix</h3>
+              <canvas id="email-mix-chart"></canvas>
+            </article>
+            <article>
+              <h3>Meeting Participation Mix</h3>
+              <canvas id="meeting-mix-chart"></canvas>
+            </article>
+            <article>
+              <h3>Metrics Metadata</h3>
+              <pre id="metrics-meta">-</pre>
+            </article>
+            <article>
+              <h3>Completeness Feedback</h3>
+              <p class="hint">Rate semantic answer completeness from 1 (low) to 5 (high).</p>
+              <div class="feedback-row">
+                <label for="feedback-score">Score</label>
+                <input id="feedback-score" type="range" min="1" max="5" value="4" />
+                <span id="feedback-score-value">4</span>
+              </div>
+              <textarea id="feedback-comment" placeholder="Optional note on what was missing"></textarea>
+              <div class="actions">
+                <button id="submit-feedback" class="ghost">Submit Feedback</button>
+                <button id="load-completeness" class="ghost">Load Completeness Chart</button>
+              </div>
+              <canvas id="completeness-chart"></canvas>
+            </article>
+          </div>
+        </section>
+
+        <section id="panel-architecture" class="tab-panel">
+          <article>
+            <h3>System Architecture</h3>
+            <p class="hint">Live details are fetched from the backend architecture endpoint.</p>
+            <div class="actions">
+              <button id="load-architecture" class="ghost">Load Architecture</button>
+            </div>
+            <p id="architecture-status" class="hint">No data loaded yet.</p>
+            <pre id="architecture-json">-</pre>
           </article>
-        </div>
+        </section>
+
+        <section id="panel-technology" class="tab-panel">
+          <article>
+            <h3>Technology Learning View</h3>
+            <p class="hint">Flow plus component-level improvement opportunities for local builders.</p>
+            <div class="actions">
+              <button id="load-technology" class="ghost">Load Technology Flow</button>
+            </div>
+            <p id="technology-status" class="hint">No technology map loaded yet.</p>
+            <div id="technology-flow" class="tech-grid"></div>
+          </article>
+        </section>
+
+        <section id="panel-admin" class="tab-panel">
+          <article>
+            <h3>Admin Data Load</h3>
+            <p class="hint">Trigger local data synchronization into this repo database.</p>
+            <div class="admin-controls">
+              <label for="load-mode">Load Mode</label>
+              <select id="load-mode">
+                <option value="incremental">Incremental Load</option>
+                <option value="full">Full Load (replace local target tables)</option>
+              </select>
+            </div>
+            <div class="actions">
+              <button id="run-admin-load" class="ghost">Run Load</button>
+              <button id="refresh-admin-status" class="ghost">Refresh Status</button>
+            </div>
+            <p id="admin-status" class="hint">No admin action yet.</p>
+            <pre id="admin-json">-</pre>
+          </article>
+        </section>
       </section>
     </main>
 
