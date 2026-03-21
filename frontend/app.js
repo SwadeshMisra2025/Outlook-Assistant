@@ -1,9 +1,15 @@
 const API_BASE = "http://127.0.0.1:8010";
 
 const queryEl = document.getElementById("query");
+const recentQueriesEl = document.getElementById("recent-queries");
 const statusEl = document.getElementById("status");
 const answerEl = document.getElementById("answer");
 const metaEl = document.getElementById("meta");
+const rawResultsEl = document.getElementById("raw-results");
+const evidenceToggleEl = document.getElementById("evidence-toggle");
+const evidenceDrawerEl = document.getElementById("evidence-drawer");
+const evidenceCloseEl = document.getElementById("evidence-close");
+const evidenceCountEl = document.getElementById("evidence-count");
 const metricsMetaEl = document.getElementById("metrics-meta");
 const sessionIdEl = document.getElementById("session-id");
 const chatMessageEl = document.getElementById("chat-message");
@@ -33,6 +39,86 @@ let meetingMixChart;
 let completenessChart;
 let activeSessionId = null;
 let lastQueryId = null;
+const RECENT_QUERIES_KEY = "oa_recent_queries_v1";
+
+function getRecentQueries() {
+  try {
+    const raw = localStorage.getItem(RECENT_QUERIES_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((x) => typeof x === "string" && x.trim()).slice(0, 5);
+  } catch {
+    return [];
+  }
+}
+
+function setRecentQueries(queries) {
+  localStorage.setItem(RECENT_QUERIES_KEY, JSON.stringify(queries.slice(0, 5)));
+}
+
+function renderRecentQueries() {
+  const queries = getRecentQueries();
+  if (!recentQueriesEl) {
+    return;
+  }
+
+  recentQueriesEl.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Select one of your last 5 questions...";
+  recentQueriesEl.appendChild(placeholder);
+
+  queries.forEach((q) => {
+    const option = document.createElement("option");
+    option.value = q;
+    option.textContent = q.length > 120 ? `${q.slice(0, 117)}...` : q;
+    recentQueriesEl.appendChild(option);
+  });
+}
+
+function saveRecentQuery(query) {
+  const normalized = query.trim();
+  if (!normalized) {
+    return;
+  }
+  const existing = getRecentQueries().filter((x) => x.toLowerCase() !== normalized.toLowerCase());
+  const updated = [normalized, ...existing].slice(0, 5);
+  setRecentQueries(updated);
+  renderRecentQueries();
+}
+
+function renderRawResults(results) {
+  if (!Array.isArray(results) || results.length === 0) {
+    return "No raw evidence rows returned for this query.";
+  }
+
+  const lines = results.map((item, idx) => {
+    const source = item.source_type || item.type || "unknown";
+    const title = item.title || "(no title)";
+    const eventTime = item.event_time || "(no timestamp)";
+    const section = item.section || "General";
+    return [
+      `${idx + 1}. [${source}] ${title}`,
+      `   section: ${section}`,
+      `   time: ${eventTime}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  });
+
+  return lines.join("\n\n");
+}
+
+function setEvidenceDrawer(open) {
+  if (!evidenceDrawerEl || !evidenceToggleEl) {
+    return;
+  }
+  evidenceDrawerEl.classList.toggle("open", open);
+  evidenceDrawerEl.setAttribute("aria-hidden", open ? "false" : "true");
+  evidenceToggleEl.setAttribute("aria-expanded", open ? "true" : "false");
+}
 
 function renderBarChart(canvasId, labels, values, label) {
   if (typeof Chart === "undefined") {
@@ -130,24 +216,32 @@ async function runSearch() {
     return;
   }
 
+  saveRecentQuery(query);
+
   statusEl.textContent = "Running hybrid search...";
   answerEl.textContent = "";
   metaEl.textContent = "";
+  rawResultsEl.textContent = "Loading evidence...";
 
   try {
     const res = await fetch(`${API_BASE}/api/search`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query, top_k: 6 }),
+      body: JSON.stringify({ query, top_k: 250 }),
     });
     const data = await res.json();
 
     answerEl.textContent = data.answer || "No answer returned.";
     metaEl.textContent = JSON.stringify(data.metadata || {}, null, 2);
+    rawResultsEl.textContent = renderRawResults(data.results || []);
+    if (evidenceCountEl) {
+      evidenceCountEl.textContent = String((data.results || []).length);
+    }
     lastQueryId = data?.metadata?.query_id || null;
-    statusEl.textContent = `Done. Mode: ${data.mode || "unknown"}`;
+    statusEl.textContent = `Done. Mode: ${data.mode || "unknown"}. Evidence rows: ${(data.results || []).length}`;
   } catch (err) {
     statusEl.textContent = `Request failed: ${err.message}`;
+    rawResultsEl.textContent = "Failed to load evidence.";
   }
 }
 
@@ -168,12 +262,19 @@ async function loadMetrics() {
     const res = await fetch(`${API_BASE}/api/metrics?top_n=10`);
     const data = await res.json();
 
-    const senderRows = data.emails_by_sender || [];
+    const corrRows = data.emails_by_correspondent || [];
+    const senderRowsRaw = data.emails_by_sender || [];
+    const senderRows = corrRows.length
+      ? corrRows.map((x) => ({ sender: x.person, count: x.count }))
+      : senderRowsRaw.map((x) => ({
+          sender: x.sender === "exchange_internal_sender" ? "exchange_internal (legacy id)" : x.sender,
+          count: x.count,
+        }));
     renderBarChart(
       "sender-chart",
       senderRows.map((x) => x.sender),
       senderRows.map((x) => x.count),
-      "Email Count"
+      corrRows.length ? "Email Correspondence Count" : "Email Count"
     );
 
     const emailMix = data.email_participant_mix || { one_to_one: 0, group: 0 };
@@ -192,7 +293,8 @@ async function loadMetrics() {
       2
     );
 
-    statusEl.textContent = "Metrics loaded.";
+    const totalEmails = data?.meta?.total_emails ?? senderRows.reduce((acc, x) => acc + (x.count || 0), 0);
+    statusEl.textContent = `Metrics loaded. Total emails read: ${totalEmails}. Sender rows plotted: ${senderRows.length}.`;
   } catch (err) {
     statusEl.textContent = `Metrics load failed: ${err.message}`;
   }
@@ -416,3 +518,29 @@ tabWorkbenchBtn.addEventListener("click", () => setTab("workbench"));
 tabArchitectureBtn.addEventListener("click", () => setTab("architecture"));
 tabTechnologyBtn.addEventListener("click", () => setTab("technology"));
 tabAdminBtn.addEventListener("click", () => setTab("admin"));
+
+if (recentQueriesEl) {
+  recentQueriesEl.addEventListener("change", () => {
+    const selected = recentQueriesEl.value;
+    if (!selected) {
+      return;
+    }
+    queryEl.value = selected;
+    queryEl.focus();
+    statusEl.textContent = "Loaded a recent question into Ask.";
+  });
+}
+
+if (evidenceToggleEl) {
+  evidenceToggleEl.addEventListener("click", () => {
+    const currentlyOpen = evidenceDrawerEl?.classList.contains("open");
+    setEvidenceDrawer(!currentlyOpen);
+  });
+}
+
+if (evidenceCloseEl) {
+  evidenceCloseEl.addEventListener("click", () => setEvidenceDrawer(false));
+}
+
+renderRecentQueries();
+setEvidenceDrawer(true);

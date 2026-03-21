@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import os
+import re
 import sqlite3
 from typing import Any
 import uuid
@@ -10,10 +11,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from app.services.query_router import classify_query
+from app.services.reasoning_service import run_reasoning_query_path
+from app.services.sql_service import run_sql_query_path, run_semantic_fallback
+
 
 class SearchRequest(BaseModel):
     query: str = Field(..., min_length=2)
-    top_k: int = Field(default=6, ge=1, le=25)
+    top_k: int = Field(default=25, ge=1, le=500)
 
 
 class ChatRequest(BaseModel):
@@ -172,7 +177,12 @@ def _ensure_target_table_from_source(src_conn: sqlite3.Connection, dst_conn: sql
     ).fetchone()
     if not row or not row[0]:
         return
-    dst_conn.execute(row[0])
+    try:
+        dst_conn.execute(row[0])
+    except sqlite3.OperationalError as exc:
+        # Incremental loads are expected to hit pre-existing tables.
+        if "already exists" not in str(exc).lower():
+            raise
 
 
 def _table_columns(conn: sqlite3.Connection, table_name: str) -> list[str]:
@@ -358,6 +368,44 @@ def _split_people(raw: str | None) -> list[str]:
     return deduped
 
 
+def _normalize_sender(raw_sender: str | None) -> str:
+    if not raw_sender:
+        return "unknown"
+
+    s = raw_sender.strip()
+    if not s:
+        return "unknown"
+
+    # Prefer a real email when present in display-name formats.
+    email_match = re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", s)
+    if email_match:
+        return email_match.group(0).lower()
+
+    lowered = s.lower()
+    # Outlook/Exchange internal legacy DN values are not human-friendly for charts.
+    if lowered.startswith("/o=") or lowered.startswith("/ou=") or "/cn=recipients/" in lowered:
+        return "exchange_internal_sender"
+
+    return lowered
+
+
+def _normalize_person_token(raw_value: str) -> str:
+    v = (raw_value or "").strip().strip('"').strip("'")
+    v = re.sub(r"\s+", " ", v)
+    return v
+
+
+def _is_self_person(token: str) -> bool:
+    t = token.lower()
+    aliases = [
+        "swadesh",
+        "swadesh misra",
+        "swadesh.misra@gmail.com",
+        "me@company.com",
+    ]
+    return any(a in t for a in aliases)
+
+
 def _demo_metrics() -> dict[str, Any]:
     return {
         "source": "demo",
@@ -390,22 +438,31 @@ def _compute_metrics(top_n: int = 10) -> dict[str, Any]:
         result: dict[str, Any] = {
             "source": "sqlite",
             "emails_by_sender": [],
+            "emails_by_correspondent": [],
             "email_participant_mix": {"one_to_one": 0, "group": 0},
             "meeting_participant_mix": {"one_to_one": 0, "group": 0},
-            "meta": {"sqlite_path": path, "warnings": []},
+            "meta": {"sqlite_path": path, "warnings": [], "total_emails": 0, "total_meetings": 0},
         }
 
         if _table_exists(conn, "emails"):
+            total_emails_row = conn.execute("SELECT COUNT(*) AS c FROM emails").fetchone()
+            result["meta"]["total_emails"] = int(total_emails_row["c"] if total_emails_row else 0)
             sender_col = _first_existing_column(conn, "emails", ["sender", "sender_email", "from_email", "from_address"])
             recipient_col = _first_existing_column(conn, "emails", ["recipients", "to_recipients", "to_emails", "participant_emails"])
 
             if sender_col:
                 rows = conn.execute(
-                    f"SELECT COALESCE({sender_col}, '') AS sender, COUNT(*) AS c FROM emails GROUP BY sender ORDER BY c DESC LIMIT ?",
-                    (top_n,),
+                    f"SELECT COALESCE({sender_col}, '') AS sender, COUNT(*) AS c FROM emails GROUP BY sender ORDER BY c DESC",
                 ).fetchall()
+                sender_counts: dict[str, int] = {}
+                for r in rows:
+                    key = _normalize_sender(r["sender"])
+                    sender_counts[key] = sender_counts.get(key, 0) + int(r["c"])
+
+                sorted_senders = sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)
                 result["emails_by_sender"] = [
-                    {"sender": (r["sender"] or "unknown"), "count": int(r["c"])} for r in rows
+                    {"sender": sender, "count": count}
+                    for sender, count in sorted_senders[:top_n]
                 ]
             else:
                 result["meta"]["warnings"].append("No sender-like column found in emails table.")
@@ -414,19 +471,38 @@ def _compute_metrics(top_n: int = 10) -> dict[str, Any]:
                 rows = conn.execute(f"SELECT {recipient_col} AS recipients FROM emails").fetchall()
                 one = 0
                 group = 0
+                correspondents: dict[str, int] = {}
                 for r in rows:
                     recipients = _split_people(r["recipients"])
                     if len(recipients) <= 1:
                         one += 1
                     else:
                         group += 1
+
+                    for p in recipients:
+                        person = _normalize_person_token(p)
+                        if not person:
+                            continue
+                        if person.lower() in {"unknown", "undisclosed recipients"}:
+                            continue
+                        if _is_self_person(person):
+                            continue
+                        key = person.lower()
+                        correspondents[key] = correspondents.get(key, 0) + 1
+
                 result["email_participant_mix"] = {"one_to_one": one, "group": group}
+                result["emails_by_correspondent"] = [
+                    {"person": person, "count": count}
+                    for person, count in sorted(correspondents.items(), key=lambda x: x[1], reverse=True)[:top_n]
+                ]
             else:
                 result["meta"]["warnings"].append("No recipient-like column found in emails table.")
         else:
             result["meta"]["warnings"].append("Emails table not found.")
 
         if _table_exists(conn, "meetings"):
+            total_meetings_row = conn.execute("SELECT COUNT(*) AS c FROM meetings").fetchone()
+            result["meta"]["total_meetings"] = int(total_meetings_row["c"] if total_meetings_row else 0)
             attendees_col = _first_existing_column(
                 conn,
                 "meetings",
@@ -674,19 +750,27 @@ def metrics_completeness() -> dict[str, Any]:
 
 @app.post("/api/search")
 def search(req: SearchRequest) -> dict:
-    # Phase-1 placeholder: return request echo and route hint.
-    route_hint = "hybrid" if any(w in req.query.lower() for w in ["count", "how many", "total"]) else "semantic"
+    intent = classify_query(req.query)
     query_id = str(uuid.uuid4())
-    _log_semantic_query(query_id=query_id, query_text=req.query, top_k=req.top_k, mode=route_hint)
+    _log_semantic_query(query_id=query_id, query_text=req.query, top_k=req.top_k, mode=intent.mode)
+
+    if intent.mode == "sql":
+        answer, results = run_sql_query_path(req.query)
+    elif intent.mode == "reasoning":
+        answer, results = run_reasoning_query_path(req.query, top_k=req.top_k)
+    else:
+        answer, results = run_semantic_fallback(req.query, top_k=req.top_k)
+
     return {
-        "answer": "Search pipeline scaffold is active. Connect SQL and Chroma adapters next.",
-        "mode": route_hint,
-        "results": [],
+        "answer": answer,
+        "mode": intent.mode,
+        "results": results[:req.top_k],
         "metadata": {
             "query_id": query_id,
             "query": req.query,
             "top_k": req.top_k,
-            "execution_path": ["router", "sql_or_semantic", "synthesis"],
+            "route_reason": intent.reason,
+            "execution_path": ["router", intent.mode, "synthesis"],
         },
     }
 

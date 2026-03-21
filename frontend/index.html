@@ -29,6 +29,13 @@
         </div>
 
         <section id="panel-workbench" class="tab-panel active">
+          <div class="recent-row">
+            <label for="recent-queries">Recent Questions</label>
+            <select id="recent-queries">
+              <option value="">Select one of your last 5 questions...</option>
+            </select>
+          </div>
+
           <div class="row">
             <label for="query">Ask</label>
             <textarea id="query" placeholder="Example: summarize my ABGL work and include total meetings in 2025"></textarea>
@@ -65,7 +72,7 @@
 
           <div class="metrics-grid">
             <article>
-              <h3>Emails by Sender</h3>
+              <h3>Top Email Correspondents</h3>
               <canvas id="sender-chart"></canvas>
             </article>
             <article>
@@ -143,6 +150,19 @@
         </section>
       </section>
     </main>
+
+    <button id="evidence-toggle" class="evidence-toggle" type="button" aria-expanded="true">
+      Show/Hide Evidence <span id="evidence-count">0</span>
+    </button>
+
+    <aside id="evidence-drawer" class="evidence-drawer open" aria-hidden="false">
+      <div class="evidence-head">
+        <h3>Evidence (Raw Records Used)</h3>
+        <button id="evidence-close" class="ghost" type="button">Close</button>
+      </div>
+      <p class="hint">Expanded list of subject/title and date used for the answer.</p>
+      <pre id="raw-results">Run a search to load evidence.</pre>
+    </aside>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="app.js"></script>
