@@ -240,13 +240,22 @@ function Test-LocalSearchDataReady {
 
     Set-Location $BackendPath
     $env:SQLITE_PATH = $SqlitePath
-    & $PythonExe -c "import os, sqlite3, sys; p=os.getenv('SQLITE_PATH','./data/local_search.db');
-conn=sqlite3.connect(p);
-cur=conn.cursor();
-tables={r[0] for r in cur.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall()};
-ok=('emails' in tables) or ('meetings' in tables);
-conn.close();
-sys.exit(0 if ok else 1)"
+
+    $checkScript = @'
+import os
+import sqlite3
+import sys
+
+db_path = os.getenv("SQLITE_PATH", "./data/local_search.db")
+conn = sqlite3.connect(db_path)
+cur = conn.cursor()
+tables = {row[0] for row in cur.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+ok = ("emails" in tables) or ("meetings" in tables)
+conn.close()
+sys.exit(0 if ok else 1)
+'@
+
+    $checkScript | & $PythonExe -
     return ($LASTEXITCODE -eq 0)
 }
 
