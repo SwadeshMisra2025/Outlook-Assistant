@@ -222,7 +222,13 @@ if (-not (Test-Path $venvDir)) {
 
 Write-Host "[5/7] Installing Python dependencies..." -ForegroundColor Yellow
 $pip = Join-Path $venvDir "Scripts\pip.exe"
-& $pip install --upgrade pip setuptools wheel --quiet
+$pythonVenv = Join-Path $venvDir "Scripts\python.exe"
+
+# Always upgrade pip first to avoid legacy installer issues on some machines.
+& $pythonVenv -m pip install --upgrade pip
+& $pythonVenv -m pip --version
+
+& $pythonVenv -m pip install --upgrade setuptools wheel
 & $pip install -r (Join-Path $backendDir "requirements.txt")
 Write-Host "      Done." -ForegroundColor Gray
 

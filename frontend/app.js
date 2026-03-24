@@ -14,6 +14,11 @@ const metricsMetaEl = document.getElementById("metrics-meta");
 const sessionIdEl = document.getElementById("session-id");
 const chatMessageEl = document.getElementById("chat-message");
 const chatHistoryEl = document.getElementById("chat-history");
+const newChatSessionEl = document.getElementById("new-chat-session");
+const chatBoxEl = document.querySelector(".chat-box");
+const chatMinimizeBtnEl = document.getElementById("chat-minimize-btn");
+const metricsFloatEl = document.querySelector(".metrics-float");
+const metricsMinimizeBtnEl = document.getElementById("metrics-minimize-btn");
 const feedbackScoreEl = document.getElementById("feedback-score");
 const feedbackScoreValueEl = document.getElementById("feedback-score-value");
 const feedbackCommentEl = document.getElementById("feedback-comment");
@@ -40,6 +45,98 @@ let completenessChart;
 let activeSessionId = null;
 let lastQueryId = null;
 const RECENT_QUERIES_KEY = "oa_recent_queries_v1";
+const CHAT_SESSION_KEY = "oa_chat_session_v1";
+
+function loadStoredChatSessionId() {
+  try {
+    return localStorage.getItem(CHAT_SESSION_KEY) || null;
+  } catch {
+    return null;
+  }
+}
+
+function storeChatSessionId(sessionId) {
+  try {
+    if (sessionId) {
+      localStorage.setItem(CHAT_SESSION_KEY, sessionId);
+    } else {
+      localStorage.removeItem(CHAT_SESSION_KEY);
+    }
+  } catch {
+    // Ignore storage failures.
+  }
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function renderChatHistory(history) {
+  if (!chatHistoryEl) {
+    return;
+  }
+  if (!Array.isArray(history) || history.length === 0) {
+    chatHistoryEl.innerHTML = '<p class="chat-empty">No messages yet.</p>';
+    return;
+  }
+
+  chatHistoryEl.innerHTML = history
+    .map((message) => {
+      const role = message.role === "assistant" ? "assistant" : "user";
+      const label = role === "assistant" ? "Assistant" : "You";
+      const content = escapeHtml(message.content).replaceAll("\n", "<br>");
+      return `
+        <article class="chat-message ${role}">
+          <p class="chat-role">${label}</p>
+          <div class="chat-bubble">${content}</div>
+        </article>
+      `;
+    })
+    .join("");
+
+  chatHistoryEl.scrollTop = chatHistoryEl.scrollHeight;
+}
+
+async function restoreChatSession() {
+  activeSessionId = loadStoredChatSessionId();
+  if (!activeSessionId) {
+    sessionIdEl.textContent = "(new session)";
+    renderChatHistory([]);
+    return;
+  }
+
+  sessionIdEl.textContent = activeSessionId;
+  try {
+    const res = await fetch(`${API_BASE}/api/chat/session/${activeSessionId}`);
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const data = await res.json();
+    renderChatHistory(data.history || []);
+    statusEl.textContent = "Conversation restored.";
+  } catch (err) {
+    activeSessionId = null;
+    storeChatSessionId(null);
+    sessionIdEl.textContent = "(new session)";
+    renderChatHistory([]);
+    statusEl.textContent = `Previous conversation could not be restored: ${err.message}`;
+  }
+}
+
+function startNewConversation() {
+  activeSessionId = null;
+  storeChatSessionId(null);
+  sessionIdEl.textContent = "(new session)";
+  renderChatHistory([]);
+  chatMessageEl.value = "";
+  chatMessageEl.focus();
+  statusEl.textContent = "Started a new conversation.";
+}
 
 function getRecentQueries() {
   try {
@@ -209,6 +306,27 @@ function renderDoughnutChart(canvasId, oneToOne, group, titleColor) {
   }
 }
 
+async function parseApiResponse(res) {
+  const rawText = await res.text();
+  let data = null;
+
+  if (rawText) {
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      const preview = rawText.length > 220 ? `${rawText.slice(0, 220)}...` : rawText;
+      throw new Error(`HTTP ${res.status}: ${preview}`);
+    }
+  }
+
+  if (!res.ok) {
+    const message = data?.detail || data?.message || `HTTP ${res.status}`;
+    throw new Error(message);
+  }
+
+  return data || {};
+}
+
 async function runSearch() {
   const query = queryEl.value.trim();
   if (!query) {
@@ -229,7 +347,7 @@ async function runSearch() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ query, top_k: 250 }),
     });
-    const data = await res.json();
+    const data = await parseApiResponse(res);
 
     answerEl.textContent = data.answer || "No answer returned.";
     metaEl.textContent = JSON.stringify(data.metadata || {}, null, 2);
@@ -357,12 +475,11 @@ async function sendChatMessage() {
     const data = await res.json();
 
     activeSessionId = data.session_id;
+    storeChatSessionId(activeSessionId);
     sessionIdEl.textContent = activeSessionId;
-    chatHistoryEl.textContent = (data.history || [])
-      .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
-      .join("\n\n");
+    renderChatHistory(data.history || []);
     chatMessageEl.value = "";
-    statusEl.textContent = "Chat updated.";
+    statusEl.textContent = `Chat updated. Route: ${data?.metadata?.mode || "unknown"}.`;
   } catch (err) {
     statusEl.textContent = `Chat failed: ${err.message}`;
   }
@@ -510,6 +627,7 @@ document.getElementById("load-metrics").addEventListener("click", loadMetrics);
 document.getElementById("submit-feedback").addEventListener("click", submitFeedback);
 document.getElementById("load-completeness").addEventListener("click", loadCompletenessMetrics);
 document.getElementById("send-chat").addEventListener("click", sendChatMessage);
+newChatSessionEl.addEventListener("click", startNewConversation);
 document.getElementById("load-architecture").addEventListener("click", loadArchitecture);
 document.getElementById("load-technology").addEventListener("click", loadTechnologyFlow);
 document.getElementById("run-admin-load").addEventListener("click", runAdminLoad);
@@ -542,5 +660,31 @@ if (evidenceCloseEl) {
   evidenceCloseEl.addEventListener("click", () => setEvidenceDrawer(false));
 }
 
+if (chatMessageEl) {
+  chatMessageEl.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendChatMessage();
+    }
+  });
+}
+
+if (chatMinimizeBtnEl && chatBoxEl) {
+  chatMinimizeBtnEl.addEventListener("click", () => {
+    const minimized = chatBoxEl.classList.toggle("minimized");
+    chatMinimizeBtnEl.textContent = minimized ? "+" : "−";
+    chatMinimizeBtnEl.setAttribute("aria-expanded", minimized ? "false" : "true");
+  });
+}
+
+if (metricsMinimizeBtnEl && metricsFloatEl) {
+  metricsMinimizeBtnEl.addEventListener("click", () => {
+    const minimized = metricsFloatEl.classList.toggle("minimized");
+    metricsMinimizeBtnEl.textContent = minimized ? "+" : "−";
+    metricsMinimizeBtnEl.setAttribute("aria-expanded", minimized ? "false" : "true");
+  });
+}
+
 renderRecentQueries();
 setEvidenceDrawer(true);
+restoreChatSession();
