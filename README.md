@@ -1,5 +1,17 @@
 # Outlook Assistant - General Edition
 
+## Quick Download & Run (Non-Developer)
+
+1. Open this repository on GitHub.
+2. Click **Code -> Download ZIP**.
+3. Extract the ZIP fully.
+4. Open `deployment/SETUP (run once).bat` and run it once.
+5. After setup, open `backend/.env` and set `SOURCE_SQLITE_PATH`.
+6. Run `deployment/START Outlook Assistant.bat`.
+7. App opens at `http://127.0.0.1:8010`.
+
+If you are non-technical, follow this section first. Detailed setup remains below.
+
 First Product (General Edition) foundation for the next phase.
 
 This repository is a clean starting point for:
