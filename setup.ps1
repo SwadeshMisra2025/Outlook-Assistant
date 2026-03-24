@@ -333,6 +333,15 @@ function Invoke-InitialSqliteLoad {
     if (-not $SourceSqlitePath -or -not (Test-Path $SourceSqlitePath)) {
         Write-Host "      No source SQLite found. Attempting direct Outlook ingest for first load..." -ForegroundColor Yellow
 
+        # Setup runs elevated for installer steps. Outlook COM automation is commonly unavailable
+        # from elevated context, even when it works later from the app/Admin tab as normal user.
+        if ($isAdmin -and -not ($env:FORCE_SETUP_OUTLOOK_COM -eq "1")) {
+            Write-Host "      Skipping direct Outlook ingest during elevated setup to avoid COM session mismatch." -ForegroundColor Yellow
+            Write-Host "      Next step: run .\\start.ps1 as your normal user, then use Admin -> Full Load." -ForegroundColor Yellow
+            Write-Host "      (Set FORCE_SETUP_OUTLOOK_COM=1 only if you explicitly want to force this attempt.)" -ForegroundColor DarkYellow
+            return
+        }
+
         $directRunner = @'
 import json
 import traceback
