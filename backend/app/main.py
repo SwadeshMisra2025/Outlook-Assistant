@@ -898,7 +898,18 @@ def admin_load_status() -> dict[str, Any]:
 
 @app.post("/api/admin/load")
 def admin_load(req: AdminLoadRequest) -> dict[str, Any]:
-    payload = _run_admin_load(mode=req.mode)
+    try:
+        payload = _run_admin_load(mode=req.mode)
+    except Exception as exc:
+        payload = {
+            "status": "error",
+            "mode": req.mode,
+            "message": f"Admin load execution failed: {exc}",
+            "source_db": _source_db_path(),
+            "target_db": _db_path(),
+            "tables": [],
+        }
+
     _record_admin_run(
         mode=req.mode,
         source_db=payload.get("source_db"),

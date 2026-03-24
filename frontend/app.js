@@ -693,7 +693,7 @@ async function runAdminLoad() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ mode }),
     });
-    const data = await res.json();
+    const data = await parseApiResponse(res);
     adminJsonEl.textContent = JSON.stringify(data, null, 2);
     if (data.status === "ok") {
       applyDataSourceState({
@@ -709,6 +709,7 @@ async function runAdminLoad() {
       statusEl.textContent = "Admin load failed.";
     }
   } catch (err) {
+    adminJsonEl.textContent = JSON.stringify({ error: err.message }, null, 2);
     adminStatusEl.textContent = `Admin load failed: ${err.message}`;
     statusEl.textContent = "Admin load failed.";
   }
