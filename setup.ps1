@@ -193,6 +193,26 @@ function Find-SourceSqlitePath {
     return $null
 }
 
+function Ensure-LocalDatabaseFiles {
+    param(
+        [string]$PythonExe,
+        [string]$BackendPath,
+        [string]$SqlitePath,
+        [string]$TrackingPath
+    )
+
+    Write-Host "      Ensuring local DB files exist under backend\\data ..." -ForegroundColor Gray
+
+    $env:SQLITE_PATH = $SqlitePath
+    $env:TRACKING_DB_PATH = $TrackingPath
+    Set-Location $BackendPath
+
+    & $PythonExe -c "import os, sqlite3; from pathlib import Path; paths=[os.getenv('SQLITE_PATH','./data/local_search.db'), os.getenv('TRACKING_DB_PATH','./data/query_tracking.db')]; [Path(p).parent.mkdir(parents=True, exist_ok=True) or sqlite3.connect(p).close() for p in paths]; print('DB_FILES_READY')"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "      Warning: Could not pre-create local DB files." -ForegroundColor Yellow
+    }
+}
+
 function Invoke-InitialSqliteLoad {
     param([string]$SourceSqlitePath)
 
@@ -352,6 +372,22 @@ if (-not (Test-Path $envFile)) {
 } else {
     Write-Host "      backend\\.env already exists, not overwritten." -ForegroundColor Gray
 }
+
+$sqlitePath = Get-EnvValue -FilePath $envFile -Key "SQLITE_PATH"
+if (-not $sqlitePath) {
+    $sqlitePath = "./data/local_search.db"
+    Set-EnvValue -FilePath $envFile -Key "SQLITE_PATH" -Value $sqlitePath
+}
+
+$trackingPath = Get-EnvValue -FilePath $envFile -Key "TRACKING_DB_PATH"
+if (-not $trackingPath) {
+    $trackingPath = "./data/query_tracking.db"
+    Set-EnvValue -FilePath $envFile -Key "TRACKING_DB_PATH" -Value $trackingPath
+}
+
+Write-Host "      SQLITE_PATH: $sqlitePath" -ForegroundColor Gray
+Write-Host "      TRACKING_DB_PATH: $trackingPath" -ForegroundColor Gray
+Ensure-LocalDatabaseFiles -PythonExe $pythonVenv -BackendPath $backendDir -SqlitePath $sqlitePath -TrackingPath $trackingPath
 
 $existingSourceSqlite = Get-EnvValue -FilePath $envFile -Key "SOURCE_SQLITE_PATH"
 $resolvedSourceSqlite = Find-SourceSqlitePath -ExistingPath $existingSourceSqlite -PreferredPath $DefaultSourceSqlitePath

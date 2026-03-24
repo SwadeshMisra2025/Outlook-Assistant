@@ -323,6 +323,9 @@ def _run_admin_load(mode: str) -> dict[str, Any]:
     target_path = _db_path()
     _ensure_parent_dir(target_path)
 
+    # Ensure target DB file exists even if source is missing.
+    sqlite3.connect(target_path).close()
+
     if not source_path:
         return {
             "status": "error",
