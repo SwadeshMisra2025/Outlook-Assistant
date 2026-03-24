@@ -1,7 +1,7 @@
 @echo off
 set "ROOT=%~dp0..\"
 if exist "%ROOT%setup.ps1" (
-  powershell.exe -ExecutionPolicy Bypass -File "%ROOT%setup.ps1"
+  powershell.exe -ExecutionPolicy Bypass -File "%ROOT%setup.ps1" -DefaultSourceSqlitePath "%ROOT%backend\local_search.db"
   pause
   exit /b %errorlevel%
 )

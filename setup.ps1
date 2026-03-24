@@ -14,6 +14,10 @@
 # ============================================================
 
 #Requires -Version 5.1
+param(
+    [string]$DefaultSourceSqlitePath = ""
+)
+
 $ErrorActionPreference = "Stop"
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
@@ -24,7 +28,11 @@ if (-not $isAdmin) {
     Write-Host "Re-launching as Administrator (required for software installs)..." -ForegroundColor Yellow
     $script = $MyInvocation.MyCommand.Path
     if (-not $script) { $script = $PSCommandPath }
-    Start-Process powershell.exe "-ExecutionPolicy Bypass -File `"$script`"" -Verb RunAs
+    $argList = "-ExecutionPolicy Bypass -File `"$script`""
+    if ($DefaultSourceSqlitePath) {
+        $argList += " -DefaultSourceSqlitePath `"$DefaultSourceSqlitePath`""
+    }
+    Start-Process powershell.exe $argList -Verb RunAs
     exit
 }
 
@@ -160,13 +168,18 @@ function Set-EnvValue {
 }
 
 function Find-SourceSqlitePath {
-    param([string]$ExistingPath)
+    param([string]$ExistingPath, [string]$PreferredPath)
 
     if ($ExistingPath -and (Test-Path $ExistingPath)) {
         return $ExistingPath
     }
 
+    if ($PreferredPath -and (Test-Path $PreferredPath)) {
+        return (Resolve-Path $PreferredPath).Path
+    }
+
     $candidates = @(
+        (Join-Path $backendDir "local_search.db"),
         (Join-Path $repoRoot "..\Dev1\backend\local_search.db"),
         (Join-Path $repoRoot "..\..\Dev1\backend\local_search.db")
     )
@@ -341,7 +354,7 @@ if (-not (Test-Path $envFile)) {
 }
 
 $existingSourceSqlite = Get-EnvValue -FilePath $envFile -Key "SOURCE_SQLITE_PATH"
-$resolvedSourceSqlite = Find-SourceSqlitePath -ExistingPath $existingSourceSqlite
+$resolvedSourceSqlite = Find-SourceSqlitePath -ExistingPath $existingSourceSqlite -PreferredPath $DefaultSourceSqlitePath
 
 if ($resolvedSourceSqlite) {
     Set-EnvValue -FilePath $envFile -Key "SOURCE_SQLITE_PATH" -Value $resolvedSourceSqlite
