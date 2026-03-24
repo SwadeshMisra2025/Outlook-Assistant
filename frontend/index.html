@@ -48,16 +48,7 @@
           </div>
 
           <div class="status" id="status">Ready.</div>
-
-          <div class="chat-box">
-            <h3>Conversation</h3>
-            <p class="hint">Session ID: <span id="session-id">(new session)</span></p>
-            <textarea id="chat-message" placeholder="Continue the conversation here..."></textarea>
-            <div class="actions">
-              <button id="send-chat" class="ghost">Send Message</button>
-            </div>
-            <pre id="chat-history">-</pre>
-          </div>
+          <p id="data-source-status" class="data-source-status hidden">Using local copied database.</p>
 
           <div class="result-grid">
             <article>
@@ -70,39 +61,6 @@
             </article>
           </div>
 
-          <div class="metrics-grid">
-            <article>
-              <h3>Top Email Correspondents</h3>
-              <canvas id="sender-chart"></canvas>
-            </article>
-            <article>
-              <h3>Email Participation Mix</h3>
-              <canvas id="email-mix-chart"></canvas>
-            </article>
-            <article>
-              <h3>Meeting Participation Mix</h3>
-              <canvas id="meeting-mix-chart"></canvas>
-            </article>
-            <article>
-              <h3>Metrics Metadata</h3>
-              <pre id="metrics-meta">-</pre>
-            </article>
-            <article>
-              <h3>Completeness Feedback</h3>
-              <p class="hint">Rate semantic answer completeness from 1 (low) to 5 (high).</p>
-              <div class="feedback-row">
-                <label for="feedback-score">Score</label>
-                <input id="feedback-score" type="range" min="1" max="5" value="4" />
-                <span id="feedback-score-value">4</span>
-              </div>
-              <textarea id="feedback-comment" placeholder="Optional note on what was missing"></textarea>
-              <div class="actions">
-                <button id="submit-feedback" class="ghost">Submit Feedback</button>
-                <button id="load-completeness" class="ghost">Load Completeness Chart</button>
-              </div>
-              <canvas id="completeness-chart"></canvas>
-            </article>
-          </div>
         </section>
 
         <section id="panel-architecture" class="tab-panel">
@@ -145,11 +103,71 @@
               <button id="refresh-admin-status" class="ghost">Refresh Status</button>
             </div>
             <p id="admin-status" class="hint">No admin action yet.</p>
+            <p id="admin-data-source-status" class="data-source-status hidden">Using local copied database.</p>
             <pre id="admin-json">-</pre>
           </article>
         </section>
+
       </section>
     </main>
+
+    <aside class="metrics-float" aria-label="Metrics Results">
+      <div class="metrics-float-header">
+        <h3>Metrics Results</h3>
+        <button id="metrics-minimize-btn" class="metrics-minimize-btn" type="button" aria-expanded="true" aria-controls="metrics-float-body">−</button>
+      </div>
+      <div id="metrics-float-body" class="metrics-float-body">
+      <div class="metrics-grid">
+        <article>
+          <h3>Top Email Correspondents</h3>
+          <canvas id="sender-chart"></canvas>
+        </article>
+        <article>
+          <h3>Email Participation Mix</h3>
+          <canvas id="email-mix-chart"></canvas>
+        </article>
+        <article>
+          <h3>Meeting Participation Mix</h3>
+          <canvas id="meeting-mix-chart"></canvas>
+        </article>
+        <article>
+          <h3>Metrics Metadata</h3>
+          <pre id="metrics-meta">-</pre>
+        </article>
+        <article>
+          <h3>Completeness Feedback</h3>
+          <p class="hint">Rate semantic answer completeness from 1 (low) to 5 (high).</p>
+          <div class="feedback-row">
+            <label for="feedback-score">Score</label>
+            <input id="feedback-score" type="range" min="1" max="5" value="4" />
+            <span id="feedback-score-value">4</span>
+          </div>
+          <textarea id="feedback-comment" placeholder="Optional note on what was missing"></textarea>
+          <div class="actions">
+            <button id="submit-feedback" class="ghost">Submit Feedback</button>
+            <button id="load-completeness" class="ghost">Load Completeness Chart</button>
+          </div>
+          <canvas id="completeness-chart"></canvas>
+        </article>
+      </div>
+      </div>
+    </aside>
+
+    <div class="chat-box" aria-label="Chat Assistant">
+      <div class="chat-header">
+        <h3>Chat Assistant</h3>
+        <button id="chat-minimize-btn" class="chat-minimize-btn" type="button" aria-expanded="true" aria-controls="chat-body">−</button>
+      </div>
+      <div id="chat-body" class="chat-body">
+        <p class="hint">Session ID: <span id="session-id">(new session)</span></p>
+        <textarea id="chat-message" placeholder="Continue the conversation here..."></textarea>
+        <div class="actions">
+          <button id="send-chat" class="ghost">Send Message</button>
+          <button id="new-chat-session" class="ghost">New Conversation</button>
+        </div>
+        <div id="chat-history" class="chat-history"><p class="chat-empty">No messages yet.</p></div>
+      </div>
+    </div>
 
     <button id="evidence-toggle" class="evidence-toggle" type="button" aria-expanded="true">
       Show/Hide Evidence <span id="evidence-count">0</span>

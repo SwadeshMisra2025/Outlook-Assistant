@@ -10,6 +10,7 @@ const evidenceToggleEl = document.getElementById("evidence-toggle");
 const evidenceDrawerEl = document.getElementById("evidence-drawer");
 const evidenceCloseEl = document.getElementById("evidence-close");
 const evidenceCountEl = document.getElementById("evidence-count");
+const dataSourceStatusEl = document.getElementById("data-source-status");
 const metricsMetaEl = document.getElementById("metrics-meta");
 const sessionIdEl = document.getElementById("session-id");
 const chatMessageEl = document.getElementById("chat-message");
@@ -35,6 +36,7 @@ const architectureStatusEl = document.getElementById("architecture-status");
 const technologyStatusEl = document.getElementById("technology-status");
 const technologyFlowEl = document.getElementById("technology-flow");
 const adminStatusEl = document.getElementById("admin-status");
+const adminDataSourceStatusEl = document.getElementById("admin-data-source-status");
 const adminJsonEl = document.getElementById("admin-json");
 const loadModeEl = document.getElementById("load-mode");
 
@@ -217,6 +219,59 @@ function setEvidenceDrawer(open) {
   evidenceToggleEl.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
+function normalizePath(value) {
+  return String(value || "").replaceAll("\\", "/").toLowerCase();
+}
+
+function setDataSourceMessage(message, kind = "warning") {
+  const targets = [dataSourceStatusEl, adminDataSourceStatusEl].filter(Boolean);
+  targets.forEach((element) => {
+    element.textContent = message || "";
+    element.classList.remove("hidden", "ok");
+    if (!message) {
+      element.classList.add("hidden");
+      return;
+    }
+    if (kind === "ok") {
+      element.classList.add("ok");
+    }
+  });
+}
+
+function applyDataSourceState({ activeDbPath, targetDbPath, sourceDbPath, note }) {
+  const active = normalizePath(activeDbPath);
+  const target = normalizePath(targetDbPath);
+  const source = normalizePath(sourceDbPath);
+
+  if (note) {
+    setDataSourceMessage(note, "warning");
+    return;
+  }
+
+  if (active && source && active === source && (!target || active !== target)) {
+    setDataSourceMessage(
+      `Using source database fallback: ${activeDbPath}. Run Admin Load to copy this data into the packaged local database.`,
+      "warning"
+    );
+    return;
+  }
+
+  if (active) {
+    setDataSourceMessage(`Using local copied database: ${activeDbPath}.`, "ok");
+    return;
+  }
+
+  if (sourceDbPath) {
+    setDataSourceMessage(
+      `Source database detected at ${sourceDbPath}, but the packaged local database is not ready yet. Run Admin Load to create the local copy.`,
+      "warning"
+    );
+    return;
+  }
+
+  setDataSourceMessage("", "warning");
+}
+
 function renderBarChart(canvasId, labels, values, label) {
   if (typeof Chart === "undefined") {
     return;
@@ -359,6 +414,12 @@ async function runSearch() {
       evidenceCountEl.textContent = String((data.results || []).length);
     }
     lastQueryId = data?.metadata?.query_id || null;
+    applyDataSourceState({
+      activeDbPath: data?.metadata?.runtime?.db_path,
+      targetDbPath: "./data/local_search.db",
+      sourceDbPath: data?.metadata?.runtime?.source_db_detected,
+      note: data?.metadata?.runtime?.message && data.mode === "unavailable" ? data.metadata.runtime.message : "",
+    });
     statusEl.textContent = `Done. Mode: ${data.mode || "unknown"}. Evidence rows: ${(data.results || []).length}`;
     setEvidenceDrawer(true);
   } catch (err) {
@@ -369,6 +430,7 @@ async function runSearch() {
     if (evidenceCountEl) {
       evidenceCountEl.textContent = "0";
     }
+    setDataSourceMessage("Search failed before the app could confirm which database was active.", "warning");
     setEvidenceDrawer(true);
   }
 }
@@ -422,6 +484,12 @@ async function loadMetrics() {
     );
 
     const totalEmails = data?.meta?.total_emails ?? senderRows.reduce((acc, x) => acc + (x.count || 0), 0);
+    applyDataSourceState({
+      activeDbPath: data?.meta?.sqlite_path,
+      targetDbPath: "./data/local_search.db",
+      sourceDbPath: "",
+      note: data?.meta?.note || "",
+    });
     statusEl.textContent = `Metrics loaded. Total emails read: ${totalEmails}. Sender rows plotted: ${senderRows.length}.`;
   } catch (err) {
     statusEl.textContent = `Metrics load failed: ${err.message}`;
@@ -596,6 +664,19 @@ async function refreshAdminStatus() {
     }
     const data = await res.json();
     adminJsonEl.textContent = JSON.stringify(data, null, 2);
+    if (Array.isArray(data?.recent_runs) && data.recent_runs.length > 0) {
+      applyDataSourceState({
+        activeDbPath: data?.target_db,
+        targetDbPath: data?.target_db,
+        sourceDbPath: data?.source_db_detected,
+        note: "",
+      });
+    } else if (data?.source_db_detected) {
+      setDataSourceMessage(
+        `Source database detected at ${data.source_db_detected}. Run Admin Load to create or refresh the packaged local database at ${data.target_db}.`,
+        "warning"
+      );
+    }
     adminStatusEl.textContent = `Status loaded at ${new Date().toLocaleTimeString()}.`;
   } catch (err) {
     adminStatusEl.textContent = `Failed to load admin status: ${err.message}`;
@@ -615,6 +696,12 @@ async function runAdminLoad() {
     const data = await res.json();
     adminJsonEl.textContent = JSON.stringify(data, null, 2);
     if (data.status === "ok") {
+      applyDataSourceState({
+        activeDbPath: data?.target_db,
+        targetDbPath: data?.target_db,
+        sourceDbPath: data?.source_db,
+        note: "",
+      });
       adminStatusEl.textContent = `${mode} load completed.`;
       statusEl.textContent = "Admin load completed.";
     } else {
