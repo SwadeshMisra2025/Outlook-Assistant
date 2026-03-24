@@ -13,6 +13,7 @@ from ollama import Client
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from app.db import get_db_path
 from app.services.query_router import classify_query
 from app.services.reasoning_service import run_reasoning_query_path
 from app.services.sql_service import run_sql_query_path, run_semantic_fallback
@@ -89,6 +90,77 @@ def _tracking_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _search_runtime_status() -> dict[str, Any]:
+    search_db_path = get_db_path()
+    source_db = _source_db_path()
+    payload: dict[str, Any] = {
+        "db_path": search_db_path,
+        "db_exists": os.path.exists(search_db_path),
+        "source_db_detected": source_db,
+        "missing_tables": [],
+        "ready": False,
+        "message": "",
+    }
+
+    if not payload["db_exists"]:
+        if source_db:
+            payload["message"] = "Search data has not been loaded into the local DB yet. Use Admin Load, or set SOURCE_SQLITE_PATH and retry."
+        else:
+            payload["message"] = "Search database not found. Set SOURCE_SQLITE_PATH or run Admin Load first."
+        return payload
+
+    conn = sqlite3.connect(search_db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        required_tables = ["emails", "meetings"]
+        missing_tables = [table for table in required_tables if not _table_exists(conn, table)]
+        payload["missing_tables"] = missing_tables
+        if missing_tables:
+            payload["message"] = f"Search database is missing required tables: {', '.join(missing_tables)}."
+            return payload
+
+        email_count = conn.execute("SELECT COUNT(*) AS count FROM emails").fetchone()["count"]
+        meeting_count = conn.execute("SELECT COUNT(*) AS count FROM meetings").fetchone()["count"]
+        payload["counts"] = {
+            "emails": email_count,
+            "meetings": meeting_count,
+        }
+        payload["ready"] = True
+        payload["message"] = "Search runtime is ready."
+        if email_count == 0 and meeting_count == 0:
+            payload["message"] = "Search database is present but empty. Run Admin Load to copy data into the local DB."
+        return payload
+    except sqlite3.Error as exc:
+        payload["message"] = f"Search database could not be inspected: {exc}"
+        return payload
+    finally:
+        conn.close()
+
+
+def _search_unavailable_response(query_id: str, req: SearchRequest, route_reason: str, runtime: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "answer": runtime.get("message") or "Search is not ready yet.",
+        "mode": "unavailable",
+        "results": [],
+        "metadata": {
+            "query_id": query_id,
+            "query": req.query,
+            "top_k": req.top_k,
+            "route_reason": route_reason,
+            "execution_path": ["router", "unavailable"],
+            "runtime": runtime,
+        },
+    }
 
 
 def _init_tracking_tables() -> None:
@@ -853,27 +925,57 @@ def metrics_completeness() -> dict[str, Any]:
 
 @app.post("/api/search")
 def search(req: SearchRequest) -> dict:
-    intent = classify_query(req.query)
     query_id = str(uuid.uuid4())
+    runtime = _search_runtime_status()
+    if not runtime.get("ready"):
+        _log_semantic_query(query_id=query_id, query_text=req.query, top_k=req.top_k, mode="unavailable")
+        return _search_unavailable_response(
+            query_id=query_id,
+            req=req,
+            route_reason="search runtime unavailable",
+            runtime=runtime,
+        )
+
+    intent = classify_query(req.query)
+    execution_mode = intent.mode
+    warnings: list[str] = []
     _log_semantic_query(query_id=query_id, query_text=req.query, top_k=req.top_k, mode=intent.mode)
 
-    if intent.mode == "sql":
-        answer, results = run_sql_query_path(req.query)
-    elif intent.mode == "reasoning":
-        answer, results = run_reasoning_query_path(req.query, top_k=req.top_k)
-    else:
-        answer, results = run_semantic_fallback(req.query, top_k=req.top_k)
+    try:
+        if intent.mode == "sql":
+            answer, results = run_sql_query_path(req.query)
+        elif intent.mode == "reasoning":
+            answer, results = run_reasoning_query_path(req.query, top_k=req.top_k)
+        else:
+            answer, results = run_semantic_fallback(req.query, top_k=req.top_k)
+    except Exception as exc:
+        warnings.append(f"Primary {intent.mode} route failed: {exc}")
+        try:
+            answer, results = run_semantic_fallback(req.query, top_k=req.top_k)
+            execution_mode = "semantic-fallback"
+            warnings.append("Returned semantic fallback results instead of failing the whole request.")
+        except Exception as fallback_exc:
+            runtime["message"] = f"Search failed after fallback: {fallback_exc}"
+            runtime["errors"] = warnings + [f"Fallback semantic route failed: {fallback_exc}"]
+            return _search_unavailable_response(
+                query_id=query_id,
+                req=req,
+                route_reason=intent.reason,
+                runtime=runtime,
+            )
 
     return {
         "answer": answer,
-        "mode": intent.mode,
+        "mode": execution_mode,
         "results": results[:req.top_k],
         "metadata": {
             "query_id": query_id,
             "query": req.query,
             "top_k": req.top_k,
             "route_reason": intent.reason,
-            "execution_path": ["router", intent.mode, "synthesis"],
+            "execution_path": ["router", execution_mode, "synthesis"],
+            "warnings": warnings,
+            "runtime": runtime,
         },
     }
 

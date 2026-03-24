@@ -340,6 +340,9 @@ async function runSearch() {
   answerEl.textContent = "";
   metaEl.textContent = "";
   rawResultsEl.textContent = "Loading evidence...";
+  if (evidenceCountEl) {
+    evidenceCountEl.textContent = "0";
+  }
 
   try {
     const res = await fetch(`${API_BASE}/api/search`, {
@@ -357,9 +360,16 @@ async function runSearch() {
     }
     lastQueryId = data?.metadata?.query_id || null;
     statusEl.textContent = `Done. Mode: ${data.mode || "unknown"}. Evidence rows: ${(data.results || []).length}`;
+    setEvidenceDrawer(true);
   } catch (err) {
+    answerEl.textContent = "Search could not be completed.";
+    metaEl.textContent = JSON.stringify({ error: err.message }, null, 2);
     statusEl.textContent = `Request failed: ${err.message}`;
     rawResultsEl.textContent = "Failed to load evidence.";
+    if (evidenceCountEl) {
+      evidenceCountEl.textContent = "0";
+    }
+    setEvidenceDrawer(true);
   }
 }
 
@@ -617,25 +627,68 @@ async function runAdminLoad() {
   }
 }
 
-feedbackScoreEl.addEventListener("input", () => {
-  feedbackScoreValueEl.textContent = String(feedbackScoreEl.value);
-});
+if (feedbackScoreEl && feedbackScoreValueEl) {
+  feedbackScoreEl.addEventListener("input", () => {
+    feedbackScoreValueEl.textContent = String(feedbackScoreEl.value);
+  });
+}
 
-document.getElementById("run-search").addEventListener("click", runSearch);
-document.getElementById("health-check").addEventListener("click", checkHealth);
-document.getElementById("load-metrics").addEventListener("click", loadMetrics);
-document.getElementById("submit-feedback").addEventListener("click", submitFeedback);
-document.getElementById("load-completeness").addEventListener("click", loadCompletenessMetrics);
-document.getElementById("send-chat").addEventListener("click", sendChatMessage);
-newChatSessionEl.addEventListener("click", startNewConversation);
-document.getElementById("load-architecture").addEventListener("click", loadArchitecture);
-document.getElementById("load-technology").addEventListener("click", loadTechnologyFlow);
-document.getElementById("run-admin-load").addEventListener("click", runAdminLoad);
-document.getElementById("refresh-admin-status").addEventListener("click", refreshAdminStatus);
-tabWorkbenchBtn.addEventListener("click", () => setTab("workbench"));
-tabArchitectureBtn.addEventListener("click", () => setTab("architecture"));
-tabTechnologyBtn.addEventListener("click", () => setTab("technology"));
-tabAdminBtn.addEventListener("click", () => setTab("admin"));
+const runSearchBtn = document.getElementById("run-search");
+const healthCheckBtn = document.getElementById("health-check");
+const loadMetricsBtn = document.getElementById("load-metrics");
+const submitFeedbackBtn = document.getElementById("submit-feedback");
+const loadCompletenessBtn = document.getElementById("load-completeness");
+const sendChatBtn = document.getElementById("send-chat");
+const loadArchitectureBtn = document.getElementById("load-architecture");
+const loadTechnologyBtn = document.getElementById("load-technology");
+const runAdminLoadBtn = document.getElementById("run-admin-load");
+const refreshAdminStatusBtn = document.getElementById("refresh-admin-status");
+
+if (runSearchBtn) {
+  runSearchBtn.addEventListener("click", runSearch);
+}
+if (healthCheckBtn) {
+  healthCheckBtn.addEventListener("click", checkHealth);
+}
+if (loadMetricsBtn) {
+  loadMetricsBtn.addEventListener("click", loadMetrics);
+}
+if (submitFeedbackBtn) {
+  submitFeedbackBtn.addEventListener("click", submitFeedback);
+}
+if (loadCompletenessBtn) {
+  loadCompletenessBtn.addEventListener("click", loadCompletenessMetrics);
+}
+if (sendChatBtn) {
+  sendChatBtn.addEventListener("click", sendChatMessage);
+}
+if (newChatSessionEl) {
+  newChatSessionEl.addEventListener("click", startNewConversation);
+}
+if (loadArchitectureBtn) {
+  loadArchitectureBtn.addEventListener("click", loadArchitecture);
+}
+if (loadTechnologyBtn) {
+  loadTechnologyBtn.addEventListener("click", loadTechnologyFlow);
+}
+if (runAdminLoadBtn) {
+  runAdminLoadBtn.addEventListener("click", runAdminLoad);
+}
+if (refreshAdminStatusBtn) {
+  refreshAdminStatusBtn.addEventListener("click", refreshAdminStatus);
+}
+if (tabWorkbenchBtn) {
+  tabWorkbenchBtn.addEventListener("click", () => setTab("workbench"));
+}
+if (tabArchitectureBtn) {
+  tabArchitectureBtn.addEventListener("click", () => setTab("architecture"));
+}
+if (tabTechnologyBtn) {
+  tabTechnologyBtn.addEventListener("click", () => setTab("technology"));
+}
+if (tabAdminBtn) {
+  tabAdminBtn.addEventListener("click", () => setTab("admin"));
+}
 
 if (recentQueriesEl) {
   recentQueriesEl.addEventListener("change", () => {
@@ -659,6 +712,12 @@ if (evidenceToggleEl) {
 if (evidenceCloseEl) {
   evidenceCloseEl.addEventListener("click", () => setEvidenceDrawer(false));
 }
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && evidenceDrawerEl?.classList.contains("open")) {
+    setEvidenceDrawer(false);
+  }
+});
 
 if (chatMessageEl) {
   chatMessageEl.addEventListener("keydown", (event) => {
