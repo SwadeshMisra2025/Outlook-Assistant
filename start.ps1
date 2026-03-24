@@ -75,9 +75,21 @@ Write-Host ""
 # Keep console alive and forward server output
 try {
     while ($true) {
-        Receive-Job $job
+        # Do not crash launcher when backend writes errors; keep streaming output.
+        try {
+            $jobOutput = Receive-Job -Job $job -Keep -ErrorAction SilentlyContinue 2>&1
+            if ($jobOutput) {
+                $jobOutput | ForEach-Object { Write-Output $_ }
+            }
+        } catch {
+            Write-Host "Backend log stream warning: $($_.Exception.Message)" -ForegroundColor Yellow
+        }
+
         if ($job.State -ne 'Running') {
             Write-Host "Server stopped unexpectedly." -ForegroundColor Red
+            if ($job.ChildJobs -and $job.ChildJobs[0].JobStateInfo.Reason) {
+                Write-Host "Reason: $($job.ChildJobs[0].JobStateInfo.Reason.Message)" -ForegroundColor Yellow
+            }
             break
         }
         Start-Sleep -Seconds 2
