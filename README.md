@@ -6,7 +6,7 @@
 2. Click **Code -> Download ZIP**.
 3. Extract the ZIP fully.
 4. Open `deployment/SETUP (run once).bat` and run it once.
-5. After setup, open `backend/.env` and set `SOURCE_SQLITE_PATH`.
+5. During setup, the script will auto-detect your source `local_search.db` or ask for its path and then run the first SQLite load automatically.
 6. Run `deployment/START Outlook Assistant.bat`.
 7. App opens at `http://127.0.0.1:8010`.
 
@@ -51,8 +51,8 @@ Use these steps if the user does not have a developer setup.
 2. Extract the ZIP completely to a local folder (for example `C:\Outlook-Assistant-main`).
 3. Open the extracted folder and then open the `deployment` folder.
 4. Double-click `SETUP (run once).bat`.
-5. Wait until setup finishes. This step installs Python, build tools, Ollama, Python packages, and pulls required Ollama models.
-6. Open `backend/.env` and set `SOURCE_SQLITE_PATH` to your local `local_search.db`.
+5. Wait until setup finishes. This step installs Python, build tools, Ollama, Python packages, pulls required Ollama models, configures `SOURCE_SQLITE_PATH`, and runs the initial SQLite load into the packaged local database.
+6. If setup could not auto-detect your `local_search.db`, enter the path when prompted or set `backend/.env` later.
 7. Double-click `START Outlook Assistant.bat`.
 8. The app will open automatically at `http://127.0.0.1:8010`.
 
@@ -76,9 +76,10 @@ cd Aletha-One-General-Edition
 .\setup.ps1
 ```
 
-`setup.ps1` creates the Python virtual environment, installs all dependencies, and
-copies `.env.example` → `backend/.env`. It also pulls the required Ollama models if
-Ollama is already installed.
+`setup.ps1` creates the Python virtual environment, installs all dependencies,
+copies `.env.example` → `backend/.env`, tries to auto-detect `SOURCE_SQLITE_PATH`,
+and runs the first incremental SQLite load into `backend/data/local_search.db`.
+It also pulls the required Ollama models if Ollama is already installed.
 
 ### Step 2 — Point the app at your data
 
@@ -89,6 +90,8 @@ SOURCE_SQLITE_PATH=C:\path\to\your\local_search.db
 ```
 
 Leave it blank if you're running locally alongside Dev1 (auto-detected).
+
+If setup already detected your source SQLite and completed the initial load, you do not need to do anything else here.
 
 ### Step 3 — Start the app
 

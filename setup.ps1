@@ -8,8 +8,9 @@
 #   3. Installs Ollama (if missing)
 #   4. Creates Python virtual environment
 #   5. Installs all Python dependencies
-#   6. Copies .env.example -> backend/.env
+#   6. Copies .env.example -> backend/.env and configures SOURCE_SQLITE_PATH
 #   7. Pulls required Ollama models
+#   8. Runs the initial SQLite load into the packaged local database
 # ============================================================
 
 #Requires -Version 5.1
@@ -117,6 +118,105 @@ function Find-Python312 {
     }
 
     return $null
+}
+
+function Get-EnvValue {
+    param([string]$FilePath, [string]$Key)
+
+    if (-not (Test-Path $FilePath)) {
+        return $null
+    }
+
+    $line = Get-Content $FilePath | Where-Object { $_ -match "^\s*$Key=" } | Select-Object -First 1
+    if (-not $line) {
+        return $null
+    }
+
+    return (($line -split "=", 2)[1]).Trim()
+}
+
+function Set-EnvValue {
+    param([string]$FilePath, [string]$Key, [string]$Value)
+
+    $content = @()
+    if (Test-Path $FilePath) {
+        $content = Get-Content $FilePath
+    }
+
+    $updated = $false
+    for ($i = 0; $i -lt $content.Count; $i++) {
+        if ($content[$i] -match "^\s*$Key=") {
+            $content[$i] = "$Key=$Value"
+            $updated = $true
+            break
+        }
+    }
+
+    if (-not $updated) {
+        $content += "$Key=$Value"
+    }
+
+    Set-Content -Path $FilePath -Value $content -Encoding ASCII
+}
+
+function Find-SourceSqlitePath {
+    param([string]$ExistingPath)
+
+    if ($ExistingPath -and (Test-Path $ExistingPath)) {
+        return $ExistingPath
+    }
+
+    $candidates = @(
+        (Join-Path $repoRoot "..\Dev1\backend\local_search.db"),
+        (Join-Path $repoRoot "..\..\Dev1\backend\local_search.db")
+    )
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return (Resolve-Path $candidate).Path
+        }
+    }
+
+    return $null
+}
+
+function Invoke-InitialSqliteLoad {
+    param([string]$SourceSqlitePath)
+
+    Write-Host "[8/8] Running initial SQLite load ..." -ForegroundColor Yellow
+
+    if (-not $SourceSqlitePath -or -not (Test-Path $SourceSqlitePath)) {
+        Write-Host "      Skipped: no valid SOURCE_SQLITE_PATH available during setup." -ForegroundColor Yellow
+        Write-Host "      You can still run the load later from the Admin tab or by re-running setup after setting backend\.env." -ForegroundColor Yellow
+        return
+    }
+
+    $env:SOURCE_SQLITE_PATH = $SourceSqlitePath
+    Set-Location $backendDir
+
+    $payload = & $pythonVenv -c "import json; from app.main import _run_admin_load; print(json.dumps(_run_admin_load('incremental')))"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "      Initial SQLite load failed to execute." -ForegroundColor Yellow
+        Write-Host "      You can run it later from the Admin tab after setup." -ForegroundColor Yellow
+        return
+    }
+
+    $result = $payload | ConvertFrom-Json
+    if ($result.status -eq "ok") {
+        $insertedTotal = 0
+        if ($result.tables) {
+            foreach ($table in $result.tables) {
+                $insertedTotal += [int]$table.inserted
+            }
+        }
+        Write-Host "      Initial load completed." -ForegroundColor Green
+        Write-Host "      Source DB: $($result.source_db)" -ForegroundColor Gray
+        Write-Host "      Target DB: $($result.target_db)" -ForegroundColor Gray
+        Write-Host "      Rows copied this run: $insertedTotal" -ForegroundColor Gray
+    } else {
+        Write-Host "      Initial load skipped or failed: $($result.message)" -ForegroundColor Yellow
+        Write-Host "      You can run it later from the Admin tab." -ForegroundColor Yellow
+    }
 }
 
 Write-Host "[1/7] Python 3.12 ..." -ForegroundColor Yellow
@@ -232,19 +332,37 @@ $pythonVenv = Join-Path $venvDir "Scripts\python.exe"
 & $pip install -r (Join-Path $backendDir "requirements.txt")
 Write-Host "      Done." -ForegroundColor Gray
 
-Write-Host "[6/7] Configuring .env ..." -ForegroundColor Yellow
+Write-Host "[6/8] Configuring .env ..." -ForegroundColor Yellow
 if (-not (Test-Path $envFile)) {
     Copy-Item $envExample $envFile
     Write-Host "      Created backend\\.env from .env.example." -ForegroundColor Gray
-    Write-Host ""
-    Write-Host "      >>> ACTION REQUIRED <<<" -ForegroundColor Magenta
-    Write-Host "      Open backend\\.env and set SOURCE_SQLITE_PATH to your local_search.db path." -ForegroundColor Magenta
-    Write-Host ""
 } else {
     Write-Host "      backend\\.env already exists, not overwritten." -ForegroundColor Gray
 }
 
-Write-Host "[7/7] Pulling Ollama models (nomic-embed-text + mistral) ..." -ForegroundColor Yellow
+$existingSourceSqlite = Get-EnvValue -FilePath $envFile -Key "SOURCE_SQLITE_PATH"
+$resolvedSourceSqlite = Find-SourceSqlitePath -ExistingPath $existingSourceSqlite
+
+if ($resolvedSourceSqlite) {
+    Set-EnvValue -FilePath $envFile -Key "SOURCE_SQLITE_PATH" -Value $resolvedSourceSqlite
+    Write-Host "      SOURCE_SQLITE_PATH configured: $resolvedSourceSqlite" -ForegroundColor Gray
+} else {
+    Write-Host "      No source SQLite auto-detected." -ForegroundColor Yellow
+    $manualSourceSqlite = Read-Host "      Enter full path to local_search.db now, or press Enter to skip initial load"
+    if ($manualSourceSqlite) {
+        if (Test-Path $manualSourceSqlite) {
+            $resolvedSourceSqlite = (Resolve-Path $manualSourceSqlite).Path
+            Set-EnvValue -FilePath $envFile -Key "SOURCE_SQLITE_PATH" -Value $resolvedSourceSqlite
+            Write-Host "      SOURCE_SQLITE_PATH configured: $resolvedSourceSqlite" -ForegroundColor Gray
+        } else {
+            Write-Host "      Path not found. Initial load will be skipped for now." -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "      Initial load skipped for now. You can set SOURCE_SQLITE_PATH later in backend\\.env." -ForegroundColor Yellow
+    }
+}
+
+Write-Host "[7/8] Pulling Ollama models (nomic-embed-text + mistral) ..." -ForegroundColor Yellow
 Write-Host "      This downloads ~4-5 GB and can take several minutes on first run." -ForegroundColor Gray
 
 $ollamaProcess = Get-Process ollama -ErrorAction SilentlyContinue
@@ -263,14 +381,16 @@ try {
     Write-Host "      Run manually after setup: ollama pull nomic-embed-text ; ollama pull mistral" -ForegroundColor Yellow
 }
 
+Invoke-InitialSqliteLoad -SourceSqlitePath $resolvedSourceSqlite
+
 Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "=== Setup complete! ===" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Next steps:" -ForegroundColor Cyan
-Write-Host "    1. Open backend\\.env and set SOURCE_SQLITE_PATH" -ForegroundColor Cyan
-Write-Host "    2. Run .\\start.ps1 to launch the app" -ForegroundColor Cyan
+Write-Host "    1. Run .\\start.ps1 to launch the app" -ForegroundColor Cyan
+Write-Host "    2. If initial load was skipped, set SOURCE_SQLITE_PATH in backend\\.env and run Admin Load later" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  If a reboot prompt appeared during C++ Build Tools install," -ForegroundColor Yellow
 Write-Host "  reboot first, then run .\\start.ps1" -ForegroundColor Yellow
