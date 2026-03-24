@@ -213,6 +213,43 @@ function Ensure-LocalDatabaseFiles {
     }
 }
 
+function Get-BackendAbsolutePath {
+    param([string]$BackendPath, [string]$DbPath)
+
+    if (-not $DbPath) {
+        return ""
+    }
+
+    if ([System.IO.Path]::IsPathRooted($DbPath)) {
+        return $DbPath
+    }
+
+    return (Join-Path $BackendPath $DbPath)
+}
+
+function Test-LocalSearchDataReady {
+    param(
+        [string]$PythonExe,
+        [string]$BackendPath,
+        [string]$SqlitePath
+    )
+
+    if (-not $SqlitePath) {
+        return $false
+    }
+
+    Set-Location $BackendPath
+    $env:SQLITE_PATH = $SqlitePath
+    & $PythonExe -c "import os, sqlite3, sys; p=os.getenv('SQLITE_PATH','./data/local_search.db');
+conn=sqlite3.connect(p);
+cur=conn.cursor();
+tables={r[0] for r in cur.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall()};
+ok=('emails' in tables) or ('meetings' in tables);
+conn.close();
+sys.exit(0 if ok else 1)"
+    return ($LASTEXITCODE -eq 0)
+}
+
 function Invoke-InitialSqliteLoad {
     param([string]$SourceSqlitePath)
 
@@ -389,13 +426,24 @@ Write-Host "      SQLITE_PATH: $sqlitePath" -ForegroundColor Gray
 Write-Host "      TRACKING_DB_PATH: $trackingPath" -ForegroundColor Gray
 Ensure-LocalDatabaseFiles -PythonExe $pythonVenv -BackendPath $backendDir -SqlitePath $sqlitePath -TrackingPath $trackingPath
 
+$sqlitePathAbs = Get-BackendAbsolutePath -BackendPath $backendDir -DbPath $sqlitePath
+$trackingPathAbs = Get-BackendAbsolutePath -BackendPath $backendDir -DbPath $trackingPath
+Write-Host "      Local search DB file: $sqlitePathAbs" -ForegroundColor Gray
+Write-Host "      Tracking DB file: $trackingPathAbs" -ForegroundColor Gray
+
 $existingSourceSqlite = Get-EnvValue -FilePath $envFile -Key "SOURCE_SQLITE_PATH"
 $resolvedSourceSqlite = Find-SourceSqlitePath -ExistingPath $existingSourceSqlite -PreferredPath $DefaultSourceSqlitePath
+
+$localSearchReady = Test-LocalSearchDataReady -PythonExe $pythonVenv -BackendPath $backendDir -SqlitePath $sqlitePath
 
 if ($resolvedSourceSqlite) {
     Set-EnvValue -FilePath $envFile -Key "SOURCE_SQLITE_PATH" -Value $resolvedSourceSqlite
     Write-Host "      SOURCE_SQLITE_PATH configured: $resolvedSourceSqlite" -ForegroundColor Gray
 } else {
+    if ($localSearchReady) {
+        Write-Host "      Local search DB already contains data. Skipping SOURCE_SQLITE_PATH prompt and initial load." -ForegroundColor Gray
+        $resolvedSourceSqlite = ""
+    } else {
     Write-Host "      No source SQLite auto-detected." -ForegroundColor Yellow
     $manualSourceSqlite = Read-Host "      Enter full path to local_search.db now, or press Enter to skip initial load"
     if ($manualSourceSqlite) {
@@ -408,6 +456,7 @@ if ($resolvedSourceSqlite) {
         }
     } else {
         Write-Host "      Initial load skipped for now. You can set SOURCE_SQLITE_PATH later in backend\\.env." -ForegroundColor Yellow
+    }
     }
 }
 
