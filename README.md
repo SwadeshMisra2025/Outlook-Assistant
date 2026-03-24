@@ -27,26 +27,81 @@ This repository is a clean starting point for:
 
 - `backend/` - FastAPI service skeleton for routing and orchestration
 - `frontend/` - Product UI starter with refreshed General Edition look
+- `deployment/` - non-developer launchers (`SETUP (run once).bat`, `START Outlook Assistant.bat`)
 - `docs/ITERATION_HISTORY.md` - full history of quick versions and improvements
 - `docs/PYTHON_ENV_SETUP.md` - detailed Python setup for Windows
 
-## Quick Start
+## Non-Developer Deployment (Recommended)
 
-### Backend
+Use these steps if the user does not have a developer setup.
+
+1. Open the GitHub repository and select **Code -> Download ZIP**.
+2. Extract the ZIP completely to a local folder (for example `C:\Outlook-Assistant-main`).
+3. Open the extracted folder and then open the `deployment` folder.
+4. Double-click `SETUP (run once).bat`.
+5. Wait until setup finishes. This step installs Python, build tools, Ollama, Python packages, and pulls required Ollama models.
+6. Open `backend/.env` and set `SOURCE_SQLITE_PATH` to your local `local_search.db`.
+7. Double-click `START Outlook Assistant.bat`.
+8. The app will open automatically at `http://127.0.0.1:8010`.
+
+Notes:
+- Run setup only once per machine.
+- Use the start file every time you want to launch the app.
+- Keep Outlook desktop installed and signed in before indexing.
+
+## Quick Start (3 steps)
+
+> **Prerequisites on Windows:**
+> - [Python 3.12](https://python.org/downloads/) — tick "Add to PATH" during install
+> - [Ollama](https://ollama.com) — needed for chat/semantic features (metrics/search still work without it)
+> - Your Outlook SQLite export (`local_search.db`) from the Dev1 ingestion pipeline
+
+### Step 1 — Clone and run setup (one time only)
+
 ```powershell
-cd backend
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-python -m uvicorn app.main:app --port 8010 --reload
+git clone <repo-url>
+cd Aletha-One-General-Edition
+.\setup.ps1
 ```
 
-Health check: `http://127.0.0.1:8010/api/health`
+`setup.ps1` creates the Python virtual environment, installs all dependencies, and
+copies `.env.example` → `backend/.env`. It also pulls the required Ollama models if
+Ollama is already installed.
 
-Metrics endpoint: `http://127.0.0.1:8010/api/metrics?top_n=10`
+### Step 2 — Point the app at your data
 
-### Frontend
-Open `frontend/index.html` directly in browser for Phase-1 UI prototype.
+Open `backend/.env` and fill in:
+
+```env
+SOURCE_SQLITE_PATH=C:\path\to\your\local_search.db
+```
+
+Leave it blank if you're running locally alongside Dev1 (auto-detected).
+
+### Step 3 — Start the app
+
+```powershell
+.\start.ps1
+```
+
+The script starts the backend, waits for it to be healthy, and automatically opens
+`http://127.0.0.1:8010` in your browser. The **frontend is served from the same port**
+— no separate server or extra steps.
+
+| Endpoint | Purpose |
+|---|---|
+| `http://127.0.0.1:8010/` | Full UI (Workbench, Chat, Metrics, Architecture) |
+| `http://127.0.0.1:8010/api/health` | Health check |
+| `http://127.0.0.1:8010/api/metrics?top_n=10` | Metrics JSON |
+| `http://127.0.0.1:8010/docs` | Interactive API docs (Swagger UI) |
+
+### Sharing with a colleague
+
+1. Share this repo (zip or `git clone`).
+2. Colleague runs `setup.ps1` → edits `backend/.env` → runs `start.ps1`.
+3. That's it — no Node.js, no Docker, no build step required.
+
+See `docs/PYTHON_ENV_SETUP.md` for troubleshooting venv and Ollama issues.
 
 ## Next Phase Backlog
 
