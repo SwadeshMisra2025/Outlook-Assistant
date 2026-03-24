@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from ollama import Client
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -44,13 +46,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:3001",
-        "http://localhost:3001",
-        "http://127.0.0.1:3000",
-        "http://localhost:3000",
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -337,6 +334,92 @@ def _recent_chat(session_id: str, limit: int = 8) -> list[dict[str, str]]:
         conn.close()
 
 
+def _chat_history(session_id: str, limit: int = 40) -> list[dict[str, str]]:
+    return _recent_chat(session_id, limit=limit)
+
+
+def _chat_client() -> Client:
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+    timeout_seconds = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "8"))
+    return Client(host=base_url, timeout=timeout_seconds)
+
+
+def _rewrite_chat_query(message: str, history: list[dict[str, str]]) -> str:
+    trimmed = message.strip()
+    if not trimmed:
+        return trimmed
+
+    follow_up_pattern = re.compile(
+        r"^(and|also|what about|how about|why|when|where|who|which|continue|more|elaborate|expand|compare|show me|tell me more)\b",
+        re.IGNORECASE,
+    )
+    pronoun_pattern = re.compile(r"\b(it|that|those|them|they|he|she|his|her|their|these|this)\b", re.IGNORECASE)
+    previous_user_messages = [m["content"] for m in history if m.get("role") == "user"]
+    previous_user = previous_user_messages[-1] if previous_user_messages else ""
+
+    # If the new turn already looks self-contained, use it directly.
+    if len(trimmed.split()) >= 6 and not follow_up_pattern.search(trimmed) and not pronoun_pattern.search(trimmed):
+        return trimmed
+
+    if not previous_user:
+        return trimmed
+
+    transcript = "\n".join([f"{m['role']}: {m['content']}" for m in history[-8:]])
+    prompt = (
+        "Rewrite the user's latest follow-up into one standalone Outlook work-history search question. "
+        "Keep concrete names, projects, and dates. Return only the rewritten question.\n\n"
+        f"Conversation:\n{transcript}\n"
+        f"latest_user_message: {trimmed}"
+    )
+    try:
+        response = _chat_client().chat(
+            model=os.getenv("CHAT_MODEL", "mistral").strip() or "mistral",
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.1},
+        )
+        rewritten = response.get("message", {}).get("content", "").strip()
+        if rewritten:
+            return rewritten
+    except Exception:
+        pass
+
+    base_query = previous_user.strip()
+    follow_up = trimmed.strip()
+
+    # Heuristic fallback for time-based follow-ups when rewrite LLM is unavailable.
+    if any(marker in follow_up.lower() for marker in ["last year", "this year", "today", "till today", "until today", "to date", "till date", "until date"]):
+        for marker in ["last year", "this year", "today", "till today", "until today", "to date", "till date", "until date"]:
+            base_query = re.sub(rf"\b{re.escape(marker)}\b", "", base_query, flags=re.IGNORECASE)
+        base_query = re.sub(r"\s+", " ", base_query).strip(" ?.,")
+        return f"{base_query} {follow_up}".strip()
+
+    return f"{base_query} {follow_up}".strip()
+
+
+def _run_chat_assistant(message: str, history: list[dict[str, str]]) -> tuple[str, str, str, int]:
+    effective_query = _rewrite_chat_query(message, history)
+    intent = classify_query(effective_query)
+
+    if intent.mode == "sql":
+        answer, results = run_sql_query_path(effective_query)
+    elif intent.mode == "reasoning":
+        answer, results = run_reasoning_query_path(effective_query, top_k=12)
+    else:
+        answer, results = run_semantic_fallback(effective_query, top_k=12)
+
+    result_count = len(results)
+    if effective_query != message.strip():
+        assistant_text = (
+            f"Interpreted follow-up as: {effective_query}\n\n"
+            f"{answer}\n\n"
+            f"Route: {intent.mode}. Evidence rows: {result_count}."
+        )
+    else:
+        assistant_text = f"{answer}\n\nRoute: {intent.mode}. Evidence rows: {result_count}."
+
+    return assistant_text, effective_query, intent.mode, result_count
+
+
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
@@ -595,29 +678,41 @@ def health() -> dict:
 def architecture() -> dict[str, Any]:
     return {
         "name": "Outlook Assistant - General Edition",
-        "version": "0.1.0",
+        "version": "0.2.0",
         "flow": [
-            "Source ingestion (Outlook/Graph)",
-            "SQL facts lane (counts, deterministic analytics)",
-            "Semantic lane (chunk + embed + vector retrieval)",
-            "Hybrid orchestration (parallel SQL + semantic)",
-            "Grounded synthesis with citations + numeric facts",
-            "Feedback loop (completeness scoring + query tracking)",
+            "Admin load stage (incremental/full copy from source SQLite into local DB)",
+            "Search/chat request intake with session-aware follow-up rewrite",
+            "Intent routing (sql, reasoning, semantic)",
+            "Execution lanes: SQL analytics, reasoning summarization, semantic fallback",
+            "Grounded response synthesis with execution metadata",
+            "Feedback and observability loop (completeness + metrics + history)",
         ],
         "components": {
             "api": {
                 "health": "/api/health",
                 "search": "/api/search",
                 "chat": "/api/chat/message",
+                "chat_session": "/api/chat/session/{session_id}",
                 "metrics": "/api/metrics",
                 "completeness": "/api/metrics/completeness",
+                "feedback": "/api/feedback/completeness",
+                "admin_load": "/api/admin/load",
+                "admin_load_status": "/api/admin/load-status",
+                "technology_map": "/api/technology-map",
             },
             "data": {
                 "sql_path": _db_path(),
                 "tracking_path": _tracking_db_path(),
             },
+            "ui": {
+                "tabs": ["Workbench", "Architecture", "Technology and Flow", "Admin"],
+                "floating_panels": [
+                    "Chat Assistant (minimizable, session-aware)",
+                    "Metrics Results (minimizable, docked to bottom-left on desktop)",
+                ],
+            },
         },
-        "modes": ["sql", "semantic", "hybrid"],
+        "modes": ["sql", "reasoning", "semantic"],
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -629,54 +724,60 @@ def technology_map() -> dict[str, Any]:
         "objective": "Help local builders understand architecture, stack choices, and high-impact improvement areas.",
         "stages": [
             {
-                "name": "1) Ingestion",
-                "purpose": "Pull raw activity from Outlook/Graph into local processing lanes.",
-                "technologies": ["Outlook COM", "Microsoft Graph", "Python connectors"],
-                "current_state": "Planned in this repo scaffold; implemented in prior prototype iterations.",
+                "name": "1) Data Sync and Ingestion",
+                "purpose": "Bring source data into this repo's local SQLite target for deterministic local querying.",
+                "technologies": ["SQLite", "FastAPI admin endpoints", "Python ETL copy utilities"],
+                "current_state": "Implemented incremental/full admin load path with run tracking.",
                 "improvements": [
-                    "Add incremental sync using watermarks.",
-                    "Capture attachment text extraction pipeline.",
-                    "Track per-source ingestion failure queue.",
+                    "Add per-table watermark persistence for faster incremental loads.",
+                    "Capture row-level reconciliation metrics for each load run.",
+                    "Add optional source connectors (Outlook/Graph) as pluggable ingestors.",
                 ],
             },
             {
                 "name": "2) SQL Facts Lane",
                 "purpose": "Answer deterministic count and numeric analytics queries.",
                 "technologies": ["SQLite", "SQL aggregations", "FastAPI"],
-                "current_state": "Metrics endpoint supports sender/participant analytics patterns.",
+                "current_state": "Implemented for counts, time windows, engagement views, and participant lookups.",
                 "improvements": [
                     "Add schema migration tooling.",
-                    "Add reusable query templates for common business questions.",
+                    "Add reusable query templates for recurring business questions.",
                     "Add metric cache for expensive aggregations.",
                 ],
             },
             {
-                "name": "3) Semantic Lane",
-                "purpose": "Retrieve context-rich evidence for narrative and exploratory questions.",
-                "technologies": ["Chunking", "Embeddings", "ChromaDB", "Ollama"],
-                "current_state": "Designed as target lane; placeholder in current scaffold search output.",
+                "name": "3) Reasoning Lane",
+                "purpose": "Build person/work summaries using evidence from meetings and emails over requested periods.",
+                "technologies": ["LangGraph", "Ollama", "Regex entity/time extraction", "SQLite evidence joins"],
+                "current_state": "Implemented and routed through query intent classification.",
                 "improvements": [
-                    "Implement direct-source historical chunk backfill.",
-                    "Add retrieval evaluation set (precision, recall, coverage).",
-                    "Add metadata filters for people, date, project.",
+                    "Add confidence scoring and explicit evidence coverage indicators.",
+                    "Add person alias learning from feedback and usage history.",
+                    "Add richer time constraints (quarter, month-range, fiscal year).",
                 ],
             },
             {
-                "name": "4) Orchestration",
-                "purpose": "Select SQL/semantic/hybrid and merge outputs into one grounded answer.",
-                "technologies": ["FastAPI routing", "Execution planner", "Hybrid synthesis"],
-                "current_state": "Mode routing placeholder currently implemented.",
+                "name": "4) Semantic Fallback",
+                "purpose": "Provide broad exploratory fallback when strict SQL or reasoning routes are not selected.",
+                "technologies": ["Fallback retriever", "SQLite text scan", "Answer synthesis"],
+                "current_state": "Implemented as default route when SQL/reasoning signals are absent.",
                 "improvements": [
-                    "Parallelize SQL and semantic fetch in hybrid mode.",
-                    "Lock numeric facts from SQL before generation.",
-                    "Return confidence and citation coverage score.",
+                    "Introduce vector retrieval backend for higher recall.",
+                    "Add section-specific retrieval weighting (emails vs meetings).",
+                    "Return retrieval diagnostics (hit quality, coverage, latency).",
                 ],
             },
             {
-                "name": "5) Conversation and Feedback",
-                "purpose": "Persist user sessions and measure answer completeness.",
-                "technologies": ["Tracking SQLite", "Session history", "Feedback analytics"],
-                "current_state": "Chat message logging and completeness scoring are implemented.",
+                "name": "5) Conversation, Feedback, and UX",
+                "purpose": "Support iterative Q&A with session context and operator-facing observability panels.",
+                "technologies": [
+                    "Tracking SQLite",
+                    "Session history",
+                    "Follow-up rewrite",
+                    "Completeness feedback",
+                    "Floating/minimizable UI panels",
+                ],
+                "current_state": "Implemented chat sessions, query rewrite, completeness metrics, and docked metrics/chat panels.",
                 "improvements": [
                     "Turn low completeness into automatic follow-up retrieval.",
                     "Add per-user quality trend dashboards.",
@@ -687,8 +788,10 @@ def technology_map() -> dict[str, Any]:
         "local_build_path": [
             "Run backend (FastAPI + uvicorn)",
             "Serve frontend static UI",
-            "Use Technology tab to inspect architecture and staged improvements",
-            "Implement one stage at a time and validate through metrics/completeness",
+            "Use Admin tab to sync source data into local target DB",
+            "Use Workbench + Chat panels to validate routing behavior",
+            "Use Architecture and Technology tabs to inspect current stack and roadmap",
+            "Validate quality with metrics and completeness feedback loops",
         ],
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -797,17 +900,36 @@ def feedback_completeness(req: CompletenessFeedbackRequest) -> dict[str, Any]:
 @app.post("/api/chat/message")
 def chat_message(req: ChatRequest) -> dict[str, Any]:
     session_id = req.session_id or str(uuid.uuid4())
+    prior_history = _chat_history(session_id, limit=12)
     _log_chat_message(session_id, "user", req.message)
 
-    recent = _recent_chat(session_id, limit=6)
-    assistant_text = (
-        "I am tracking this as a conversational thread. "
-        "For production mode, connect this endpoint to the hybrid SQL + Chroma orchestrator so each turn can cite evidence and numeric facts."
-    )
+    assistant_text, effective_query, mode, result_count = _run_chat_assistant(req.message, prior_history)
     _log_chat_message(session_id, "assistant", assistant_text)
+    history = _chat_history(session_id, limit=40)
 
     return {
         "session_id": session_id,
         "assistant": assistant_text,
-        "history": recent + [{"role": "assistant", "content": assistant_text}],
+        "history": history,
+        "metadata": {
+            "effective_query": effective_query,
+            "mode": mode,
+            "result_count": result_count,
+        },
     }
+
+
+@app.get("/api/chat/session/{session_id}")
+def chat_session(session_id: str) -> dict[str, Any]:
+    return {
+        "session_id": session_id,
+        "history": _chat_history(session_id, limit=40),
+    }
+
+
+# Serve the static frontend.  Must be mounted AFTER all /api/* routes so that
+# API paths are resolved first.  Works both when cwd is backend/ and when the
+# caller sets --app-dir backend.
+_FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
+if _FRONTEND_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=str(_FRONTEND_DIR), html=True), name="frontend")
