@@ -60,17 +60,24 @@ def _db_path() -> str:
 
 def _source_db_path() -> str | None:
     explicit = os.getenv("SOURCE_SQLITE_PATH")
+    target = os.path.abspath(_db_path())
     if explicit and os.path.exists(explicit):
-        return explicit
+        explicit_abs = os.path.abspath(explicit)
+        if explicit_abs != target:
+            return explicit
 
     cwd = Path.cwd()
     candidates = [
+        cwd / ".." / ".." / "Dev1" / "backend" / "data" / "local_search.db",
         cwd / ".." / ".." / "Dev1" / "backend" / "local_search.db",
+        cwd / ".." / ".." / ".." / "Dev1" / "backend" / "data" / "local_search.db",
         cwd / ".." / ".." / ".." / "Dev1" / "backend" / "local_search.db",
     ]
     for c in candidates:
         if c.exists():
-            return str(c.resolve())
+            resolved = str(c.resolve())
+            if os.path.abspath(resolved) != target:
+                return resolved
     return None
 
 
@@ -329,7 +336,7 @@ def _run_admin_load(mode: str) -> dict[str, Any]:
     if not source_path:
         return {
             "status": "error",
-            "message": "No source SQLite found. Set SOURCE_SQLITE_PATH or keep Dev1 backend DB available.",
+            "message": "No source SQLite found. Full Load copies from a separate source local_search.db. Set SOURCE_SQLITE_PATH in backend/.env (for example: C:/path/to/local_search.db) or place a source DB at a supported auto-detect path.",
             "source_db": None,
             "target_db": target_path,
             "tables": [],

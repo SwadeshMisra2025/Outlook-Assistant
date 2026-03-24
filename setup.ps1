@@ -168,25 +168,49 @@ function Set-EnvValue {
 }
 
 function Find-SourceSqlitePath {
-    param([string]$ExistingPath, [string]$PreferredPath)
+    param(
+        [string]$ExistingPath,
+        [string]$PreferredPath,
+        [string]$TargetPath
+    )
+
+    $targetAbs = $null
+    if ($TargetPath) {
+        if ([System.IO.Path]::IsPathRooted($TargetPath)) {
+            $targetAbs = [System.IO.Path]::GetFullPath($TargetPath)
+        } else {
+            $targetAbs = [System.IO.Path]::GetFullPath((Join-Path $backendDir $TargetPath))
+        }
+    }
 
     if ($ExistingPath -and (Test-Path $ExistingPath)) {
-        return $ExistingPath
+        $existingAbs = [System.IO.Path]::GetFullPath($ExistingPath)
+        if (-not $targetAbs -or $existingAbs -ne $targetAbs) {
+            return $ExistingPath
+        }
     }
 
     if ($PreferredPath -and (Test-Path $PreferredPath)) {
-        return (Resolve-Path $PreferredPath).Path
+        $preferredAbs = (Resolve-Path $PreferredPath).Path
+        if (-not $targetAbs -or ([System.IO.Path]::GetFullPath($preferredAbs) -ne $targetAbs)) {
+            return $preferredAbs
+        }
     }
 
     $candidates = @(
         (Join-Path $backendDir "local_search.db"),
+        (Join-Path $repoRoot "..\Dev1\backend\data\local_search.db"),
         (Join-Path $repoRoot "..\Dev1\backend\local_search.db"),
+        (Join-Path $repoRoot "..\..\Dev1\backend\data\local_search.db"),
         (Join-Path $repoRoot "..\..\Dev1\backend\local_search.db")
     )
 
     foreach ($candidate in $candidates) {
         if (Test-Path $candidate) {
-            return (Resolve-Path $candidate).Path
+            $resolved = (Resolve-Path $candidate).Path
+            if (-not $targetAbs -or ([System.IO.Path]::GetFullPath($resolved) -ne $targetAbs)) {
+                return $resolved
+            }
         }
     }
 
@@ -260,9 +284,12 @@ sys.exit(0 if ok else 1)
 }
 
 function Invoke-InitialSqliteLoad {
-    param([string]$SourceSqlitePath)
+    param(
+        [string]$SourceSqlitePath,
+        [string]$LoadMode = "full"
+    )
 
-    Write-Host "[8/8] Running initial SQLite load ..." -ForegroundColor Yellow
+    Write-Host "[8/8] Running initial SQLite load ($LoadMode) ..." -ForegroundColor Yellow
 
     if (-not $SourceSqlitePath -or -not (Test-Path $SourceSqlitePath)) {
         Write-Host "      Skipped: no valid SOURCE_SQLITE_PATH available during setup." -ForegroundColor Yellow
@@ -273,7 +300,7 @@ function Invoke-InitialSqliteLoad {
     $env:SOURCE_SQLITE_PATH = $SourceSqlitePath
     Set-Location $backendDir
 
-    $payload = & $pythonVenv -c "import json; from app.main import _run_admin_load; print(json.dumps(_run_admin_load('incremental')))"
+    $payload = & $pythonVenv -c "import json; from app.main import _run_admin_load; print(json.dumps(_run_admin_load('$LoadMode')))"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "      Initial SQLite load failed to execute." -ForegroundColor Yellow
         Write-Host "      You can run it later from the Admin tab after setup." -ForegroundColor Yellow
@@ -288,7 +315,7 @@ function Invoke-InitialSqliteLoad {
                 $insertedTotal += [int]$table.inserted
             }
         }
-        Write-Host "      Initial load completed." -ForegroundColor Green
+        Write-Host "      Initial load completed ($LoadMode)." -ForegroundColor Green
         Write-Host "      Source DB: $($result.source_db)" -ForegroundColor Gray
         Write-Host "      Target DB: $($result.target_db)" -ForegroundColor Gray
         Write-Host "      Rows copied this run: $insertedTotal" -ForegroundColor Gray
@@ -441,7 +468,7 @@ Write-Host "      Local search DB file: $sqlitePathAbs" -ForegroundColor Gray
 Write-Host "      Tracking DB file: $trackingPathAbs" -ForegroundColor Gray
 
 $existingSourceSqlite = Get-EnvValue -FilePath $envFile -Key "SOURCE_SQLITE_PATH"
-$resolvedSourceSqlite = Find-SourceSqlitePath -ExistingPath $existingSourceSqlite -PreferredPath $DefaultSourceSqlitePath
+$resolvedSourceSqlite = Find-SourceSqlitePath -ExistingPath $existingSourceSqlite -PreferredPath $DefaultSourceSqlitePath -TargetPath $sqlitePath
 
 $localSearchReady = Test-LocalSearchDataReady -PythonExe $pythonVenv -BackendPath $backendDir -SqlitePath $sqlitePath
 
@@ -454,18 +481,8 @@ if ($resolvedSourceSqlite) {
         $resolvedSourceSqlite = ""
     } else {
     Write-Host "      No source SQLite auto-detected." -ForegroundColor Yellow
-    $manualSourceSqlite = Read-Host "      Enter full path to local_search.db now, or press Enter to skip initial load"
-    if ($manualSourceSqlite) {
-        if (Test-Path $manualSourceSqlite) {
-            $resolvedSourceSqlite = (Resolve-Path $manualSourceSqlite).Path
-            Set-EnvValue -FilePath $envFile -Key "SOURCE_SQLITE_PATH" -Value $resolvedSourceSqlite
-            Write-Host "      SOURCE_SQLITE_PATH configured: $resolvedSourceSqlite" -ForegroundColor Gray
-        } else {
-            Write-Host "      Path not found. Initial load will be skipped for now." -ForegroundColor Yellow
-        }
-    } else {
-        Write-Host "      Initial load skipped for now. You can set SOURCE_SQLITE_PATH later in backend\\.env." -ForegroundColor Yellow
-    }
+    Write-Host "      Initial load will be skipped for now (non-interactive setup)." -ForegroundColor Yellow
+    Write-Host "      To enable Admin Full Load later, set SOURCE_SQLITE_PATH in backend\\.env to a valid local_search.db source path." -ForegroundColor Yellow
     }
 }
 
@@ -488,7 +505,11 @@ try {
     Write-Host "      Run manually after setup: ollama pull nomic-embed-text ; ollama pull mistral" -ForegroundColor Yellow
 }
 
-Invoke-InitialSqliteLoad -SourceSqlitePath $resolvedSourceSqlite
+if ($localSearchReady) {
+    Write-Host "[8/8] Skipping initial SQLite load (local DB already has data)." -ForegroundColor Yellow
+} else {
+    Invoke-InitialSqliteLoad -SourceSqlitePath $resolvedSourceSqlite -LoadMode "full"
+}
 
 Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
 
