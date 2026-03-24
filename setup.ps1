@@ -15,10 +15,26 @@
 
 #Requires -Version 5.1
 param(
-    [string]$DefaultSourceSqlitePath = ""
+    [string]$DefaultSourceSqlitePath = "",
+    [string]$LogPath = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+$scriptPath = $MyInvocation.MyCommand.Path
+if (-not $scriptPath) { $scriptPath = $PSCommandPath }
+if (-not $scriptPath) {
+    throw "Unable to resolve setup script path."
+}
+
+$repoRoot = Split-Path -Parent $scriptPath
+$logDir = Join-Path $repoRoot "logs"
+New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+
+if (-not $LogPath) {
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $LogPath = Join-Path $logDir "setup-$stamp.log"
+}
 
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]"Administrator"
@@ -26,19 +42,24 @@ $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIden
 if (-not $isAdmin) {
     Write-Host ""
     Write-Host "Re-launching as Administrator (required for software installs)..." -ForegroundColor Yellow
-    $script = $MyInvocation.MyCommand.Path
-    if (-not $script) { $script = $PSCommandPath }
-    $argList = "-ExecutionPolicy Bypass -File `"$script`""
+    $argList = "-ExecutionPolicy Bypass -File `"$scriptPath`""
     if ($DefaultSourceSqlitePath) {
         $argList += " -DefaultSourceSqlitePath `"$DefaultSourceSqlitePath`""
     }
+    $argList += " -LogPath `"$LogPath`""
+    Write-Host "Log file: $LogPath" -ForegroundColor Gray
     Start-Process powershell.exe $argList -Verb RunAs
     exit
 }
 
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
 
-$repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$transcriptStarted = $false
+try {
+Start-Transcript -Path $LogPath -Force | Out-Null
+$transcriptStarted = $true
+Write-Host "Installation log: $LogPath" -ForegroundColor Gray
+
 $backendDir = Join-Path $repoRoot "backend"
 $venvDir = Join-Path $backendDir ".venv"
 $envFile = Join-Path $backendDir ".env"
@@ -620,3 +641,15 @@ Write-Host ""
 Write-Host "  If a reboot prompt appeared during C++ Build Tools install," -ForegroundColor Yellow
 Write-Host "  reboot first, then run .\\start.ps1" -ForegroundColor Yellow
 Write-Host ""
+Write-Host "  Installation log saved at: $LogPath" -ForegroundColor Gray
+} catch {
+    Write-Host "" 
+    Write-Host "=== Setup failed ===" -ForegroundColor Red
+    Write-Host "Reason: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Review log: $LogPath" -ForegroundColor Yellow
+    throw
+} finally {
+    if ($transcriptStarted) {
+        Stop-Transcript | Out-Null
+    }
+}

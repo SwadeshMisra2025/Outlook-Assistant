@@ -111,12 +111,12 @@
       </section>
     </main>
 
-    <aside class="metrics-float" aria-label="Metrics Results">
-      <div class="metrics-float-header">
+    <aside id="metrics-drawer" class="evidence-drawer metrics-drawer" aria-hidden="true" aria-label="Metrics Results">
+      <div class="evidence-head">
         <h3>Metrics Results</h3>
-        <button id="metrics-minimize-btn" class="metrics-minimize-btn" type="button" aria-expanded="true" aria-controls="metrics-float-body">−</button>
+        <button id="metrics-close" class="ghost" type="button">Close</button>
       </div>
-      <div id="metrics-float-body" class="metrics-float-body">
+      <p class="hint">Explore distribution and quality indicators for indexed communication.</p>
       <div class="metrics-grid">
         <article>
           <h3>Top Email Correspondents</h3>
@@ -150,13 +150,12 @@
           <canvas id="completeness-chart"></canvas>
         </article>
       </div>
-      </div>
     </aside>
 
-    <div class="chat-box" aria-label="Chat Assistant">
+    <div class="chat-box minimized" aria-label="Chat Assistant">
       <div class="chat-header">
         <h3>Chat Assistant</h3>
-        <button id="chat-minimize-btn" class="chat-minimize-btn" type="button" aria-expanded="true" aria-controls="chat-body">−</button>
+        <button id="chat-minimize-btn" class="chat-minimize-btn" type="button" aria-expanded="false" aria-controls="chat-body">+</button>
       </div>
       <div id="chat-body" class="chat-body">
         <p class="hint">Session ID: <span id="session-id">(new session)</span></p>
@@ -169,11 +168,15 @@
       </div>
     </div>
 
-    <button id="evidence-toggle" class="evidence-toggle" type="button" aria-expanded="true">
+    <button id="evidence-toggle" class="evidence-toggle" type="button" aria-expanded="false">
       Show/Hide Evidence <span id="evidence-count">0</span>
     </button>
 
-    <aside id="evidence-drawer" class="evidence-drawer open" aria-hidden="false">
+    <button id="metrics-toggle" class="evidence-toggle metrics-toggle" type="button" aria-expanded="false">
+      Show/Hide Metrics
+    </button>
+
+    <aside id="evidence-drawer" class="evidence-drawer" aria-hidden="true">
       <div class="evidence-head">
         <h3>Evidence (Raw Records Used)</h3>
         <button id="evidence-close" class="ghost" type="button">Close</button>

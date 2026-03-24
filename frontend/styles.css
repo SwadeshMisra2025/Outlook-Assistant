@@ -5,6 +5,8 @@
   --accent-2: #2a9d8f;
   --card: rgba(255, 255, 255, 0.75);
   --line: rgba(18, 38, 58, 0.18);
+  --layout-gap: 1rem;
+  --right-rail-width: min(52vw, 760px);
 }
 
 * {
@@ -45,9 +47,11 @@ body {
 }
 
 .shell {
-  max-width: 980px;
-  margin: 0 auto;
-  padding: 3rem 1rem 4rem;
+  width: min(960px, calc((100vw - 2.2in) * 0.75));
+  min-width: 560px;
+  max-width: 960px;
+  margin: 0 0 0 1.5in;
+  padding: 2.1rem var(--layout-gap) 4rem;
 }
 
 .hero {
@@ -80,16 +84,18 @@ h1 {
 
 .panel {
   margin-top: 1.4rem;
-  padding: 1rem;
+  padding: 1.05rem;
   border: 1px solid var(--line);
-  border-radius: 18px;
-  background: var(--card);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.9);
   backdrop-filter: blur(8px);
+  box-shadow: 0 12px 26px rgba(18, 38, 58, 0.08);
   animation: rise 750ms ease-out;
 }
 
 .tab-strip {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
   margin-bottom: 0.85rem;
 }
@@ -275,19 +281,22 @@ button.ghost {
   top: auto;
   right: 1rem;
   bottom: 1rem;
-  width: min(420px, calc(100vw - 2rem));
-  max-height: 72vh;
+  width: min(430px, calc(100vw - 2rem));
+  height: min(64vh, 620px);
+  max-height: calc(100vh - 2rem);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 12px;
+  border-radius: 14px;
   background: #fff;
   padding: 0.7rem;
-  box-shadow: 0 16px 38px rgba(18, 38, 58, 0.24);
-  z-index: 42;
+  box-shadow: 0 12px 28px rgba(18, 38, 58, 0.2);
+  z-index: 36;
 }
 
 .chat-box.minimized {
-  max-height: 56px;
+  height: 56px;
   padding-bottom: 0;
 }
 
@@ -333,7 +342,11 @@ button.ghost {
 }
 
 .chat-body {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
 }
 
 .chat-history {
@@ -341,9 +354,12 @@ button.ghost {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
-  max-height: calc(72vh - 170px);
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding-right: 0.2rem;
+  padding-bottom: 0.35rem;
 }
 
 .chat-empty {
@@ -424,13 +440,19 @@ button.ghost {
 
 .evidence-toggle {
   position: fixed;
-  right: 1rem;
+  right: var(--layout-gap);
   top: 1rem;
+  width: 220px;
   z-index: 40;
   box-shadow: 0 10px 26px rgba(18, 38, 58, 0.3);
   background: #12263a;
   color: #fff;
   border: 2px solid #f4a261;
+}
+
+.metrics-toggle {
+  top: calc(4.3rem + 0.5in);
+  z-index: 43;
 }
 
 .evidence-toggle span {
@@ -444,21 +466,26 @@ button.ghost {
 
 .evidence-drawer {
   position: fixed;
-  right: 1rem;
+  right: var(--layout-gap);
   top: 4.5rem;
-  width: min(680px, calc(100vw - 2rem));
-  max-height: 72vh;
+  width: var(--right-rail-width);
+  max-height: calc(100vh - 6rem);
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.98);
   box-shadow: 0 16px 48px rgba(18, 38, 58, 0.24);
   padding: 0.8rem;
-  z-index: 39;
+  z-index: 41;
   transform: translateY(18px);
   opacity: 0;
   pointer-events: none;
   transition: transform 180ms ease, opacity 180ms ease;
+}
+
+.metrics-drawer {
+  top: calc(7.7rem + 0.5in);
+  z-index: 42;
 }
 
 .evidence-drawer.open {
@@ -476,72 +503,6 @@ button.ghost {
 
 .evidence-head h3 {
   margin: 0;
-}
-
-.metrics-float {
-  position: fixed;
-  left: 1rem;
-  right: auto;
-  top: auto;
-  bottom: 1rem;
-  width: clamp(320px, 28vw, 460px);
-  max-height: calc(100vh - 21rem);
-  overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: rgba(255, 255, 255, 0.97);
-  box-shadow: 0 14px 36px rgba(18, 38, 58, 0.22);
-  padding: 0.7rem;
-  z-index: 38;
-}
-
-.metrics-float.minimized {
-  max-height: 56px;
-  overflow: hidden;
-}
-
-.metrics-float.minimized .metrics-float-body {
-  display: none;
-}
-
-.metrics-float-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin: -0.7rem -0.7rem 0.6rem;
-  padding: 0.55rem 0.75rem;
-  background: #1f3e55;
-  color: #fff;
-  border-top-left-radius: 14px;
-  border-top-right-radius: 14px;
-}
-
-.metrics-float-header h3 {
-  margin: 0;
-  font-size: 0.93rem;
-}
-
-.metrics-minimize-btn {
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  background: rgba(255, 255, 255, 0.15);
-  color: #fff;
-  border-radius: 8px;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  line-height: 1;
-  font-size: 1rem;
-  font-weight: 700;
-}
-
-.metrics-minimize-btn:hover {
-  filter: none;
-  transform: none;
-  background: rgba(255, 255, 255, 0.25);
-}
-
-.metrics-float-body {
-  display: block;
 }
 
 .metrics-grid {
@@ -575,11 +536,38 @@ canvas {
 }
 
 @media (max-width: 760px) {
-  .metrics-float {
+  .shell {
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    padding: 2rem 1rem 2rem;
+  }
+
+  .metrics-toggle {
+    position: static;
+    margin-top: 0.7rem;
+  }
+
+  .metrics-drawer {
     position: static;
     width: auto;
     max-height: none;
     margin-top: 1rem;
+    transform: none;
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .chat-box {
+    position: static;
+    width: auto;
+    height: auto;
+    max-height: none;
+    margin-top: 1rem;
+  }
+
+  .chat-history {
+    min-height: 200px;
   }
 
   .result-grid {

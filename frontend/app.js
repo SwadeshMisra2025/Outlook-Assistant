@@ -10,6 +10,9 @@ const evidenceToggleEl = document.getElementById("evidence-toggle");
 const evidenceDrawerEl = document.getElementById("evidence-drawer");
 const evidenceCloseEl = document.getElementById("evidence-close");
 const evidenceCountEl = document.getElementById("evidence-count");
+const metricsToggleEl = document.getElementById("metrics-toggle");
+const metricsDrawerEl = document.getElementById("metrics-drawer");
+const metricsCloseEl = document.getElementById("metrics-close");
 const dataSourceStatusEl = document.getElementById("data-source-status");
 const metricsMetaEl = document.getElementById("metrics-meta");
 const sessionIdEl = document.getElementById("session-id");
@@ -18,8 +21,6 @@ const chatHistoryEl = document.getElementById("chat-history");
 const newChatSessionEl = document.getElementById("new-chat-session");
 const chatBoxEl = document.querySelector(".chat-box");
 const chatMinimizeBtnEl = document.getElementById("chat-minimize-btn");
-const metricsFloatEl = document.querySelector(".metrics-float");
-const metricsMinimizeBtnEl = document.getElementById("metrics-minimize-btn");
 const feedbackScoreEl = document.getElementById("feedback-score");
 const feedbackScoreValueEl = document.getElementById("feedback-score-value");
 const feedbackCommentEl = document.getElementById("feedback-comment");
@@ -217,6 +218,15 @@ function setEvidenceDrawer(open) {
   evidenceDrawerEl.classList.toggle("open", open);
   evidenceDrawerEl.setAttribute("aria-hidden", open ? "false" : "true");
   evidenceToggleEl.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function setMetricsDrawer(open) {
+  if (!metricsDrawerEl || !metricsToggleEl) {
+    return;
+  }
+  metricsDrawerEl.classList.toggle("open", open);
+  metricsDrawerEl.setAttribute("aria-hidden", open ? "false" : "true");
+  metricsToggleEl.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
 function normalizePath(value) {
@@ -448,6 +458,7 @@ async function checkHealth() {
 
 async function loadMetrics() {
   statusEl.textContent = "Loading metrics...";
+  setMetricsDrawer(true);
   try {
     const res = await fetch(`${API_BASE}/api/metrics?top_n=10`);
     const data = await res.json();
@@ -801,8 +812,26 @@ if (evidenceCloseEl) {
   evidenceCloseEl.addEventListener("click", () => setEvidenceDrawer(false));
 }
 
+if (metricsToggleEl) {
+  metricsToggleEl.addEventListener("click", () => {
+    const currentlyOpen = metricsDrawerEl?.classList.contains("open");
+    setMetricsDrawer(!currentlyOpen);
+  });
+}
+
+if (metricsCloseEl) {
+  metricsCloseEl.addEventListener("click", () => setMetricsDrawer(false));
+}
+
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && evidenceDrawerEl?.classList.contains("open")) {
+  if (event.key !== "Escape") {
+    return;
+  }
+  if (metricsDrawerEl?.classList.contains("open")) {
+    setMetricsDrawer(false);
+    return;
+  }
+  if (evidenceDrawerEl?.classList.contains("open")) {
     setEvidenceDrawer(false);
   }
 });
@@ -824,14 +853,7 @@ if (chatMinimizeBtnEl && chatBoxEl) {
   });
 }
 
-if (metricsMinimizeBtnEl && metricsFloatEl) {
-  metricsMinimizeBtnEl.addEventListener("click", () => {
-    const minimized = metricsFloatEl.classList.toggle("minimized");
-    metricsMinimizeBtnEl.textContent = minimized ? "+" : "−";
-    metricsMinimizeBtnEl.setAttribute("aria-expanded", minimized ? "false" : "true");
-  });
-}
-
 renderRecentQueries();
-setEvidenceDrawer(true);
+setEvidenceDrawer(false);
+setMetricsDrawer(false);
 restoreChatSession();
