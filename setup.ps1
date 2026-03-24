@@ -214,6 +214,24 @@ function Find-SourceSqlitePath {
         }
     }
 
+    # Last-resort auto-detect: search nearby tree for a Dev1 backend source DB.
+    $searchRoots = @(
+        (Split-Path $repoRoot -Parent),
+        $repoRoot
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+
+    foreach ($root in $searchRoots) {
+        $matches = Get-ChildItem -Path $root -Filter "local_search.db" -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match "\\Dev1\\backend\\local_search\.db$" }
+
+        foreach ($m in $matches) {
+            $resolved = $m.FullName
+            if (-not $targetAbs -or ([System.IO.Path]::GetFullPath($resolved) -ne $targetAbs)) {
+                return $resolved
+            }
+        }
+    }
+
     return $null
 }
 
@@ -292,22 +310,98 @@ function Invoke-InitialSqliteLoad {
     Write-Host "[8/8] Running initial SQLite load ($LoadMode) ..." -ForegroundColor Yellow
 
     if (-not $SourceSqlitePath -or -not (Test-Path $SourceSqlitePath)) {
-        Write-Host "      Skipped: no valid SOURCE_SQLITE_PATH available during setup." -ForegroundColor Yellow
-        Write-Host "      You can still run the load later from the Admin tab or by re-running setup after setting backend\.env." -ForegroundColor Yellow
+        Write-Host "      No source SQLite found. Attempting direct Outlook ingest for first load..." -ForegroundColor Yellow
+
+        $directRunner = @'
+import json
+import traceback
+from app.services.outlook_com_ingest import ingest_from_outlook_com
+
+try:
+    result = ingest_from_outlook_com(max_items=800)
+    print(json.dumps({"status": "ok", "mode": "outlook_com", "result": result}))
+except Exception:
+    print(json.dumps({
+        "status": "error",
+        "mode": "outlook_com",
+        "message": "direct_outlook_ingest_failed",
+        "traceback": traceback.format_exc()
+    }))
+'@
+
+        Set-Location $backendDir
+        $directPayload = $directRunner | & $pythonVenv -
+
+        try {
+            $directResult = $directPayload | ConvertFrom-Json
+        } catch {
+            Write-Host "      Direct Outlook ingest returned non-JSON output." -ForegroundColor Yellow
+            if ($directPayload) {
+                $preview = [string]$directPayload
+                if ($preview.Length -gt 600) { $preview = $preview.Substring(0, 600) + " ..." }
+                Write-Host "      Raw output: $preview" -ForegroundColor DarkYellow
+            }
+            Write-Host "      You can run Full Load later from Admin after setting SOURCE_SQLITE_PATH." -ForegroundColor Yellow
+            return
+        }
+
+        if ($directResult.status -eq "ok") {
+            $emailRows = [int]($directResult.result.emails_upserted)
+            $meetingRows = [int]($directResult.result.meetings_upserted)
+            Write-Host "      Initial load completed via Outlook COM." -ForegroundColor Green
+            Write-Host "      Emails upserted: $emailRows" -ForegroundColor Gray
+            Write-Host "      Meetings upserted: $meetingRows" -ForegroundColor Gray
+        } else {
+            Write-Host "      Direct Outlook ingest failed during setup." -ForegroundColor Yellow
+            if ($directResult.traceback) {
+                Write-Host "      Details: $($directResult.traceback)" -ForegroundColor DarkYellow
+            }
+            Write-Host "      You can run Full Load later from Admin after setting SOURCE_SQLITE_PATH." -ForegroundColor Yellow
+        }
         return
     }
 
     $env:SOURCE_SQLITE_PATH = $SourceSqlitePath
     Set-Location $backendDir
 
-    $payload = & $pythonVenv -c "import json; from app.main import _run_admin_load; print(json.dumps(_run_admin_load('$LoadMode')))"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "      Initial SQLite load failed to execute." -ForegroundColor Yellow
+    $runner = @'
+import json
+import traceback
+from app.main import _run_admin_load
+
+mode = "__LOAD_MODE__"
+try:
+    result = _run_admin_load(mode)
+    print(json.dumps(result))
+except Exception:
+    print(json.dumps({
+        "status": "error",
+        "message": "initial_load_exception",
+        "traceback": traceback.format_exc()
+    }))
+'@
+
+    $runner = $runner.Replace("__LOAD_MODE__", $LoadMode)
+    $payload = $runner | & $pythonVenv -
+    if ($LASTEXITCODE -ne 0 -and -not $payload) {
+        Write-Host "      Initial SQLite load failed to execute (python runtime error)." -ForegroundColor Yellow
         Write-Host "      You can run it later from the Admin tab after setup." -ForegroundColor Yellow
         return
     }
 
-    $result = $payload | ConvertFrom-Json
+    try {
+        $result = $payload | ConvertFrom-Json
+    } catch {
+        Write-Host "      Initial load returned non-JSON output." -ForegroundColor Yellow
+        if ($payload) {
+            $preview = [string]$payload
+            if ($preview.Length -gt 600) { $preview = $preview.Substring(0, 600) + " ..." }
+            Write-Host "      Raw output: $preview" -ForegroundColor DarkYellow
+        }
+        Write-Host "      You can run it later from the Admin tab after setup." -ForegroundColor Yellow
+        return
+    }
+
     if ($result.status -eq "ok") {
         $insertedTotal = 0
         if ($result.tables) {
@@ -321,6 +415,9 @@ function Invoke-InitialSqliteLoad {
         Write-Host "      Rows copied this run: $insertedTotal" -ForegroundColor Gray
     } else {
         Write-Host "      Initial load skipped or failed: $($result.message)" -ForegroundColor Yellow
+        if ($result.traceback) {
+            Write-Host "      Details: $($result.traceback)" -ForegroundColor DarkYellow
+        }
         Write-Host "      You can run it later from the Admin tab." -ForegroundColor Yellow
     }
 }

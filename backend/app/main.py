@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import os
 import re
 import sqlite3
@@ -44,6 +44,9 @@ app = FastAPI(
     version="0.1.0",
     description="Foundation API for hybrid SQL + semantic search architecture.",
 )
+
+_last_outlook_bootstrap_attempt: datetime | None = None
+_last_outlook_bootstrap_result: dict[str, Any] | None = None
 
 app.add_middleware(
     CORSMiddleware,
@@ -168,6 +171,69 @@ def _search_unavailable_response(query_id: str, req: SearchRequest, route_reason
             "runtime": runtime,
         },
     }
+
+
+def _auto_outlook_fallback_enabled() -> bool:
+    value = os.getenv("AUTO_OUTLOOK_FALLBACK_ON_SEARCH", "true").strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _outlook_bootstrap_cooldown_seconds() -> int:
+    raw = os.getenv("AUTO_OUTLOOK_FALLBACK_COOLDOWN_SECONDS", "300").strip()
+    try:
+        return max(0, int(raw))
+    except Exception:
+        return 300
+
+
+def _outlook_bootstrap_max_items() -> int:
+    raw = os.getenv("AUTO_OUTLOOK_FALLBACK_MAX_ITEMS", "400").strip()
+    try:
+        return max(50, min(2000, int(raw)))
+    except Exception:
+        return 400
+
+
+def _attempt_outlook_runtime_bootstrap() -> dict[str, Any]:
+    global _last_outlook_bootstrap_attempt
+    global _last_outlook_bootstrap_result
+
+    if os.name != "nt":
+        return {"status": "skipped", "reason": "non_windows"}
+
+    if not _auto_outlook_fallback_enabled():
+        return {"status": "skipped", "reason": "disabled_by_env"}
+
+    cooldown = _outlook_bootstrap_cooldown_seconds()
+    now = datetime.now(timezone.utc)
+    if _last_outlook_bootstrap_attempt and cooldown > 0:
+        if now - _last_outlook_bootstrap_attempt < timedelta(seconds=cooldown):
+            return {
+                "status": "skipped",
+                "reason": "cooldown_active",
+                "last_attempt_at": _last_outlook_bootstrap_attempt.isoformat(),
+                "last_result": _last_outlook_bootstrap_result,
+            }
+
+    _last_outlook_bootstrap_attempt = now
+
+    try:
+        from app.services.outlook_com_ingest import ingest_from_outlook_com
+
+        ingest_result = ingest_from_outlook_com(max_items=_outlook_bootstrap_max_items())
+        _last_outlook_bootstrap_result = {
+            "status": "ok",
+            "ingest": ingest_result,
+            "attempted_at": now.isoformat(),
+        }
+        return _last_outlook_bootstrap_result
+    except Exception as exc:
+        _last_outlook_bootstrap_result = {
+            "status": "error",
+            "error": str(exc),
+            "attempted_at": now.isoformat(),
+        }
+        return _last_outlook_bootstrap_result
 
 
 def _init_tracking_tables() -> None:
@@ -334,6 +400,40 @@ def _run_admin_load(mode: str) -> dict[str, Any]:
     sqlite3.connect(target_path).close()
 
     if not source_path:
+        # If no source SQLite is available, allow full mode to bootstrap directly from Outlook.
+        if mode == "full":
+            try:
+                from app.services.outlook_com_ingest import ingest_from_outlook_com
+
+                ingest = ingest_from_outlook_com(max_items=800)
+                return {
+                    "status": "ok",
+                    "mode": "full",
+                    "source_db": "outlook_com",
+                    "target_db": target_path,
+                    "tables": [
+                        {
+                            "table": "emails",
+                            "inserted": int(ingest.get("emails_upserted", 0)),
+                            "strategy": "outlook_com_upsert",
+                        },
+                        {
+                            "table": "meetings",
+                            "inserted": int(ingest.get("meetings_upserted", 0)),
+                            "strategy": "outlook_com_upsert",
+                        },
+                    ],
+                    "loaded_at": datetime.now(timezone.utc).isoformat(),
+                }
+            except Exception as exc:
+                return {
+                    "status": "error",
+                    "message": f"No source SQLite found, and direct Outlook ingest failed: {exc}",
+                    "source_db": None,
+                    "target_db": target_path,
+                    "tables": [],
+                }
+
         return {
             "status": "error",
             "message": "No source SQLite found. Full Load copies from a separate source local_search.db. Set SOURCE_SQLITE_PATH in backend/.env (for example: C:/path/to/local_search.db) or place a source DB at a supported auto-detect path.",
@@ -949,13 +1049,20 @@ def search(req: SearchRequest) -> dict:
     query_id = str(uuid.uuid4())
     runtime = _search_runtime_status()
     if not runtime.get("ready"):
-        _log_semantic_query(query_id=query_id, query_text=req.query, top_k=req.top_k, mode="unavailable")
-        return _search_unavailable_response(
-            query_id=query_id,
-            req=req,
-            route_reason="search runtime unavailable",
-            runtime=runtime,
-        )
+        bootstrap = _attempt_outlook_runtime_bootstrap()
+        runtime_after = _search_runtime_status()
+        runtime_after["auto_outlook_bootstrap"] = bootstrap
+
+        if not runtime_after.get("ready"):
+            _log_semantic_query(query_id=query_id, query_text=req.query, top_k=req.top_k, mode="unavailable")
+            return _search_unavailable_response(
+                query_id=query_id,
+                req=req,
+                route_reason="search runtime unavailable",
+                runtime=runtime_after,
+            )
+
+        runtime = runtime_after
 
     intent = classify_query(req.query)
     execution_mode = intent.mode
