@@ -322,48 +322,129 @@ sys.exit(0 if ok else 1)
     return ($LASTEXITCODE -eq 0)
 }
 
-function Invoke-InitialSqliteLoad {
-    Write-Host "[8/8] Running initial Outlook COM ingest ..." -ForegroundColor Yellow
+function Invoke-InitialDataLoad {
+    param(
+        [string]$PythonVenvPath,
+        [string]$BackendPath,
+        [string]$RepoRoot
+    )
 
-    $ingestScript = @'
-import json
-import traceback
-from app.services.outlook_com_ingest import ingest_from_outlook_com
+    Write-Host "[8/8] Starting backend for initial data load via API..." -ForegroundColor Yellow
+    Write-Host "      (Running backend in normal user context to enable Outlook COM access)" -ForegroundColor Gray
 
-try:
-    result = ingest_from_outlook_com(max_items=800)
-    print(json.dumps({"status": "ok", "result": result}))
-except Exception:
-    print(json.dumps({
-        "status": "error",
-        "traceback": traceback.format_exc()
-    }))
-'@
+    $backendProc = $null
+    $port = 8010
+    $maxWaitSeconds = 120
+    $helperScriptPath = Join-Path $env:TEMP "outlook_assistant_step8_$([guid]::NewGuid().ToString().Substring(0,8)).ps1"
 
-    Set-Location $backendDir
-    $payload = $ingestScript | & $pythonVenv -
+    $helperScript = @"
+# Step 8 helper script - runs in normal user context to access Outlook COM
+`$port = $port
+`$repoRoot = '$RepoRoot'
+`$backendPath = '$BackendPath'
+`$pythonVenv = '$PythonVenvPath'
+`$maxWait = $maxWaitSeconds
+
+function Stop-BackendProcess {
+    param([int]\$Port)
+    try {
+        `$line = netstat -ano | findstr LISTENING | findstr ":\`$Port"
+        if (`$line) {
+            `$pid = ([string[]]`$line -split '\s+')[-1]
+            taskkill /PID `$pid /F | Out-Null
+            Start-Sleep -Seconds 1
+        }
+    } catch {}
+}
+
+# Kill any existing process on the port
+Stop-BackendProcess -Port `$port
+
+# Start the backend in background
+Write-Host "      Starting backend on port `$port..." -ForegroundColor Gray
+Set-Location `$backendPath
+`$backendProc = Start-Process `$pythonVenv -ArgumentList @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', "`$port", '--log-level', 'warning') -PassThru -NoNewWindow
+
+Start-Sleep -Seconds 3
+
+# Wait for backend to be ready
+`$startTime = Get-Date
+`$ready = `$false
+while ((New-TimeSpan -Start `$startTime -End (Get-Date)).TotalSeconds -lt `$maxWait) {
+    try {
+        `$resp = Invoke-WebRequest -Uri "http://127.0.0.1:`$port/api/health" -UseBasicParsing -TimeoutSec 5 -ErrorAction SilentlyContinue
+        if (`$resp.StatusCode -eq 200) {
+            `$ready = `$true
+            Write-Host "      Backend ready." -ForegroundColor Green
+            break
+        }
+    } catch {}
+    Start-Sleep -Seconds 1
+}
+
+if (-not `$ready) {
+    Write-Host "      ERROR: Backend did not start within `$maxWait seconds." -ForegroundColor Red
+    Stop-BackendProcess -Port `$port
+    exit 1
+}
+
+# Call the API to trigger the full load
+Write-Host "      Calling /api/admin/load endpoint (mode=full)..." -ForegroundColor Gray
+try {
+    `$body = ConvertTo-Json @{ mode = 'full' }
+    `$resp = Invoke-WebRequest -Uri "http://127.0.0.1:`$port/api/admin/load" `
+        -Method Post `
+        -ContentType 'application/json' `
+        -Body `$body `
+        -UseBasicParsing `
+        -TimeoutSec 300 `
+        -ErrorAction SilentlyContinue
+
+    if (`$resp.StatusCode -eq 200) {
+        `$respData = `$resp.Content | ConvertFrom-Json
+        Write-Host "      Load completed successfully." -ForegroundColor Green
+        if (`$respData.meta) {
+            Write-Host "      Emails upserted: `$(`$respData.meta.emails_upserted)" -ForegroundColor Gray
+            Write-Host "      Meetings upserted: `$(`$respData.meta.meetings_upserted)" -ForegroundColor Gray
+        }
+    } else {
+        Write-Host "      WARNING: API returned status `$(`$resp.StatusCode)" -ForegroundColor Yellow
+        Write-Host "      Response: `$(`$resp.Content.Substring(0, [Math]::Min(200, `$resp.Content.Length)))" -ForegroundColor Yellow
+    }
+} catch {
+    Write-Host "      WARN: /api/admin/load call failed: `$(`$_.Exception.Message)" -ForegroundColor Yellow
+    Write-Host "      You can run Admin Full Load from the UI later." -ForegroundColor Gray
+}
+
+# Stop the backend
+Write-Host "      Stopping backend..." -ForegroundColor Gray
+Stop-BackendProcess -Port `$port
+
+Write-Host "      Step 8 completed." -ForegroundColor Green
+"@
 
     try {
-        $result = $payload | ConvertFrom-Json
-    } catch {
-        Write-Host "      Outlook ingest failed - returned non-JSON output." -ForegroundColor Red
-        Write-Host "      Output: $payload" -ForegroundColor DarkYellow
-        return
-    }
+        # Save helper script
+        Set-Content -Path $helperScriptPath -Value $helperScript -Encoding UTF8
+        Write-Host "      Helper script created." -ForegroundColor Gray
 
-    if ($result.status -eq "ok") {
-        $emailRows = [int]($result.result.emails_upserted)
-        $meetingRows = [int]($result.result.meetings_upserted)
-        Write-Host "      Initial load completed via Outlook COM." -ForegroundColor Green
-        Write-Host "      Emails upserted: $emailRows" -ForegroundColor Gray
-        Write-Host "      Meetings upserted: $meetingRows" -ForegroundColor Gray
-    } else {
-        Write-Host "      Outlook COM ingest failed during setup." -ForegroundColor Red
-        if ($result.traceback) {
-            Write-Host "      Traceback:" -ForegroundColor DarkYellow
-            Write-Host "$($result.traceback)" -ForegroundColor DarkYellow
+        # Run helper in normal user context (no elevation)
+        Write-Host "      Launching normal-context helper process..." -ForegroundColor Gray
+        $proc = Start-Process -FilePath powershell.exe `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$helperScriptPath`"" `
+            -PassThru `
+            -NoNewWindow `
+            -Wait
+
+        if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne $null) {
+            Write-Host "      Step 8 helper exited with code $($proc.ExitCode)" -ForegroundColor Yellow
         }
-        exit 1
+    } catch {
+        Write-Host "      Error during step 8: $($_.Exception.Message)" -ForegroundColor Red
+    } finally {
+        if (Test-Path $helperScriptPath) {
+            Remove-Item $helperScriptPath -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -547,7 +628,7 @@ try {
     Write-Host "      Run manually after setup: ollama pull nomic-embed-text ; ollama pull mistral" -ForegroundColor Yellow
 }
 
-Invoke-InitialSqliteLoad
+Invoke-InitialDataLoad -PythonVenvPath $pythonVenv -BackendPath $backendDir -RepoRoot $repoRoot
 
 Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
 
