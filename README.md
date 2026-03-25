@@ -1,4 +1,4 @@
-# Outlook Assistant - General Edition
+# Outlook Assistant - General Edition (****Convert the Outlook to Classic Mode as the first Step****)
 
 ## Quick Download & Run (Non-Developer)
 
