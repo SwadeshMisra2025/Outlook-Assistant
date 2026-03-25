@@ -1,4 +1,5 @@
-# Outlook Assistant - General Edition (****Convert the Outlook to Classic Mode as the first Step****)
+# Outlook Assistant - General Edition 
+(****Convert the Outlook to Classic Mode as the first Step so that it is locally available****)
 
 ## Quick Download & Run (Non-Developer)
 
