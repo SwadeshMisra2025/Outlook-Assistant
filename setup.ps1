@@ -323,132 +323,47 @@ sys.exit(0 if ok else 1)
 }
 
 function Invoke-InitialSqliteLoad {
-    param(
-        [string]$SourceSqlitePath,
-        [string]$LoadMode = "full"
-    )
+    Write-Host "[8/8] Running initial Outlook COM ingest ..." -ForegroundColor Yellow
 
-    Write-Host "[8/8] Running initial SQLite load ($LoadMode) ..." -ForegroundColor Yellow
-
-    if (-not $SourceSqlitePath -or -not (Test-Path $SourceSqlitePath)) {
-        Write-Host "      No source SQLite found. Attempting direct Outlook ingest for first load..." -ForegroundColor Yellow
-
-        # Setup runs elevated for installer steps. Outlook COM automation is commonly unavailable
-        # from elevated context, even when it works later from the app/Admin tab as normal user.
-        if ($isAdmin -and -not ($env:FORCE_SETUP_OUTLOOK_COM -eq "1")) {
-            Write-Host "      Skipping direct Outlook ingest during elevated setup to avoid COM session mismatch." -ForegroundColor Yellow
-            Write-Host "      Next step: run .\\start.ps1 as your normal user, then use Admin -> Full Load." -ForegroundColor Yellow
-            Write-Host "      (Set FORCE_SETUP_OUTLOOK_COM=1 only if you explicitly want to force this attempt.)" -ForegroundColor DarkYellow
-            return
-        }
-
-        $directRunner = @'
+    $ingestScript = @'
 import json
 import traceback
 from app.services.outlook_com_ingest import ingest_from_outlook_com
 
 try:
     result = ingest_from_outlook_com(max_items=800)
-    print(json.dumps({"status": "ok", "mode": "outlook_com", "result": result}))
+    print(json.dumps({"status": "ok", "result": result}))
 except Exception:
     print(json.dumps({
         "status": "error",
-        "mode": "outlook_com",
-        "message": "direct_outlook_ingest_failed",
         "traceback": traceback.format_exc()
     }))
 '@
 
-        Set-Location $backendDir
-        $directPayload = $directRunner | & $pythonVenv -
-
-        try {
-            $directResult = $directPayload | ConvertFrom-Json
-        } catch {
-            Write-Host "      Direct Outlook ingest returned non-JSON output." -ForegroundColor Yellow
-            if ($directPayload) {
-                $preview = [string]$directPayload
-                if ($preview.Length -gt 600) { $preview = $preview.Substring(0, 600) + " ..." }
-                Write-Host "      Raw output: $preview" -ForegroundColor DarkYellow
-            }
-            Write-Host "      You can run Full Load later from Admin after setting SOURCE_SQLITE_PATH." -ForegroundColor Yellow
-            return
-        }
-
-        if ($directResult.status -eq "ok") {
-            $emailRows = [int]($directResult.result.emails_upserted)
-            $meetingRows = [int]($directResult.result.meetings_upserted)
-            Write-Host "      Initial load completed via Outlook COM." -ForegroundColor Green
-            Write-Host "      Emails upserted: $emailRows" -ForegroundColor Gray
-            Write-Host "      Meetings upserted: $meetingRows" -ForegroundColor Gray
-        } else {
-            Write-Host "      Direct Outlook ingest failed during setup." -ForegroundColor Yellow
-            if ($directResult.traceback) {
-                Write-Host "      Details: $($directResult.traceback)" -ForegroundColor DarkYellow
-            }
-            Write-Host "      You can run Full Load later from Admin after setting SOURCE_SQLITE_PATH." -ForegroundColor Yellow
-        }
-        return
-    }
-
-    $env:SOURCE_SQLITE_PATH = $SourceSqlitePath
     Set-Location $backendDir
-
-    $runner = @'
-import json
-import traceback
-from app.main import _run_admin_load
-
-mode = "__LOAD_MODE__"
-try:
-    result = _run_admin_load(mode)
-    print(json.dumps(result))
-except Exception:
-    print(json.dumps({
-        "status": "error",
-        "message": "initial_load_exception",
-        "traceback": traceback.format_exc()
-    }))
-'@
-
-    $runner = $runner.Replace("__LOAD_MODE__", $LoadMode)
-    $payload = $runner | & $pythonVenv -
-    if ($LASTEXITCODE -ne 0 -and -not $payload) {
-        Write-Host "      Initial SQLite load failed to execute (python runtime error)." -ForegroundColor Yellow
-        Write-Host "      You can run it later from the Admin tab after setup." -ForegroundColor Yellow
-        return
-    }
+    $payload = $ingestScript | & $pythonVenv -
 
     try {
         $result = $payload | ConvertFrom-Json
     } catch {
-        Write-Host "      Initial load returned non-JSON output." -ForegroundColor Yellow
-        if ($payload) {
-            $preview = [string]$payload
-            if ($preview.Length -gt 600) { $preview = $preview.Substring(0, 600) + " ..." }
-            Write-Host "      Raw output: $preview" -ForegroundColor DarkYellow
-        }
-        Write-Host "      You can run it later from the Admin tab after setup." -ForegroundColor Yellow
+        Write-Host "      Outlook ingest failed - returned non-JSON output." -ForegroundColor Red
+        Write-Host "      Output: $payload" -ForegroundColor DarkYellow
         return
     }
 
     if ($result.status -eq "ok") {
-        $insertedTotal = 0
-        if ($result.tables) {
-            foreach ($table in $result.tables) {
-                $insertedTotal += [int]$table.inserted
-            }
-        }
-        Write-Host "      Initial load completed ($LoadMode)." -ForegroundColor Green
-        Write-Host "      Source DB: $($result.source_db)" -ForegroundColor Gray
-        Write-Host "      Target DB: $($result.target_db)" -ForegroundColor Gray
-        Write-Host "      Rows copied this run: $insertedTotal" -ForegroundColor Gray
+        $emailRows = [int]($result.result.emails_upserted)
+        $meetingRows = [int]($result.result.meetings_upserted)
+        Write-Host "      Initial load completed via Outlook COM." -ForegroundColor Green
+        Write-Host "      Emails upserted: $emailRows" -ForegroundColor Gray
+        Write-Host "      Meetings upserted: $meetingRows" -ForegroundColor Gray
     } else {
-        Write-Host "      Initial load skipped or failed: $($result.message)" -ForegroundColor Yellow
+        Write-Host "      Outlook COM ingest failed during setup." -ForegroundColor Red
         if ($result.traceback) {
-            Write-Host "      Details: $($result.traceback)" -ForegroundColor DarkYellow
+            Write-Host "      Traceback:" -ForegroundColor DarkYellow
+            Write-Host "$($result.traceback)" -ForegroundColor DarkYellow
         }
-        Write-Host "      You can run it later from the Admin tab." -ForegroundColor Yellow
+        exit 1
     }
 }
 
@@ -632,11 +547,7 @@ try {
     Write-Host "      Run manually after setup: ollama pull nomic-embed-text ; ollama pull mistral" -ForegroundColor Yellow
 }
 
-if ($localSearchReady) {
-    Write-Host "[8/8] Skipping initial SQLite load (local DB already has data)." -ForegroundColor Yellow
-} else {
-    Invoke-InitialSqliteLoad -SourceSqlitePath $resolvedSourceSqlite -LoadMode "full"
-}
+Invoke-InitialSqliteLoad
 
 Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
 
