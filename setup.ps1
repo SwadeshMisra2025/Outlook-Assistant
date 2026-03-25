@@ -336,62 +336,103 @@ function Invoke-InitialDataLoad {
     $port = 8010
     $maxWaitSeconds = 120
     $helperScriptPath = Join-Path $env:TEMP "outlook_assistant_step8_$([guid]::NewGuid().ToString().Substring(0,8)).ps1"
+    $helperOutputPath = Join-Path $logDir "step8_helper_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 
     $helperScript = @"
-# Step 8 helper script - runs in normal user context to access Outlook COM
+`$ErrorActionPreference = 'Continue'
 `$port = $port
 `$repoRoot = '$RepoRoot'
 `$backendPath = '$BackendPath'
 `$pythonVenv = '$PythonVenvPath'
 `$maxWait = $maxWaitSeconds
+`$outputLog = '$helperOutputPath'
+
+function Log-Message {
+    param([string]\$Message)
+    `$msg = "[$(Get-Date -Format 'HH:mm:ss')] " + \$Message
+    (`$msg | Tee-Object -FilePath `$outputLog -Append) | Write-Host
+}
+
+Log-Message "===== Step 8 Helper Started ====="
+Log-Message "Port: `$port"
+Log-Message "Backend: `$backendPath"
+Log-Message "Python: `$pythonVenv"
 
 function Stop-BackendProcess {
     param([int]\$Port)
     try {
-        `$line = netstat -ano | findstr LISTENING | findstr ":\`$Port"
+        `$line = netstat -ano | findstr LISTENING | findstr ":\`$Port" | Out-String
         if (`$line) {
-            `$pid = ([string[]]`$line -split '\s+')[-1]
-            taskkill /PID `$pid /F | Out-Null
-            Start-Sleep -Seconds 1
+            `$parts = `$line -split '\s+' | Where-Object {`$_}
+            if (`$parts.Count -gt 0) {
+                `$pid = `$parts[-1]
+                Log-Message "Killing process `$pid on port `$Port"
+                taskkill /PID `$pid /F 2>&1 | Out-Null
+                Start-Sleep -Seconds 1
+            }
         }
-    } catch {}
+    } catch {
+        Log-Message "Error stopping backend: `$(`$_.Exception.Message)"
+    }
 }
 
-# Kill any existing process on the port
+Log-Message "Clearing port `$port if in use"
 Stop-BackendProcess -Port `$port
 
-# Start the backend in background
-Write-Host "      Starting backend on port `$port..." -ForegroundColor Gray
+Log-Message "Starting backend process"
 Set-Location `$backendPath
-`$backendProc = Start-Process `$pythonVenv -ArgumentList @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', "`$port", '--log-level', 'warning') -PassThru -NoNewWindow
+Log-Message "Working directory: `$(Get-Location)"
 
-Start-Sleep -Seconds 3
+# Start backend and capture any immediate errors
+`$backendProc = `$null
+try {
+    `$backendProc = Start-Process -FilePath `$pythonVenv `
+        -ArgumentList @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', "`$port", '--log-level', 'warning') `
+        -PassThru `
+        -NoNewWindow `
+        -ErrorAction Stop
+    Log-Message "Backend started with PID: `$(`$backendProc.Id)"
+} catch {
+    Log-Message "ERROR: Failed to start backend: `$(`$_.Exception.Message)"
+    exit 1
+}
+
+Log-Message "Waiting 4 seconds for backend to initialize"
+Start-Sleep -Seconds 4
 
 # Wait for backend to be ready
+Log-Message "Checking if backend is listening on port `$port"
 `$startTime = Get-Date
 `$ready = `$false
+`$attempts = 0
 while ((New-TimeSpan -Start `$startTime -End (Get-Date)).TotalSeconds -lt `$maxWait) {
+    `$attempts += 1
     try {
+        Log-Message "Health check attempt `$attempts"
         `$resp = Invoke-WebRequest -Uri "http://127.0.0.1:`$port/api/health" -UseBasicParsing -TimeoutSec 5 -ErrorAction SilentlyContinue
         if (`$resp.StatusCode -eq 200) {
             `$ready = `$true
-            Write-Host "      Backend ready." -ForegroundColor Green
+            Log-Message "Backend is ready (HTTP 200)"
             break
         }
-    } catch {}
-    Start-Sleep -Seconds 1
+    } catch {
+        # Expected while backend is starting
+    }
+    Start-Sleep -Seconds 2
 }
 
 if (-not `$ready) {
-    Write-Host "      ERROR: Backend did not start within `$maxWait seconds." -ForegroundColor Red
+    Log-Message "ERROR: Backend did not respond within `$maxWait seconds"
     Stop-BackendProcess -Port `$port
     exit 1
 }
 
 # Call the API to trigger the full load
-Write-Host "      Calling /api/admin/load endpoint (mode=full)..." -ForegroundColor Gray
+Log-Message "Calling /api/admin/load endpoint with mode=full"
 try {
     `$body = ConvertTo-Json @{ mode = 'full' }
+    Log-Message "Request body: `$body"
+    
     `$resp = Invoke-WebRequest -Uri "http://127.0.0.1:`$port/api/admin/load" `
         -Method Post `
         -ContentType 'application/json' `
@@ -400,33 +441,42 @@ try {
         -TimeoutSec 300 `
         -ErrorAction SilentlyContinue
 
+    Log-Message "API response status: `$(`$resp.StatusCode)"
     if (`$resp.StatusCode -eq 200) {
-        `$respData = `$resp.Content | ConvertFrom-Json
-        Write-Host "      Load completed successfully." -ForegroundColor Green
-        if (`$respData.meta) {
-            Write-Host "      Emails upserted: `$(`$respData.meta.emails_upserted)" -ForegroundColor Gray
-            Write-Host "      Meetings upserted: `$(`$respData.meta.meetings_upserted)" -ForegroundColor Gray
+        try {
+            `$respData = `$resp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
+            Log-Message "Load completed successfully"
+            if (`$respData.meta) {
+                Log-Message "Emails upserted: `$(`$respData.meta.emails_upserted)"
+                Log-Message "Meetings upserted: `$(`$respData.meta.meetings_upserted)"
+            }
+        } catch {
+            Log-Message "Could not parse response JSON: `$(`$_.Exception.Message)"
+            Log-Message "Raw response: `$(`$resp.Content.Substring(0, [Math]::Min(500, `$resp.Content.Length)))"
         }
     } else {
-        Write-Host "      WARNING: API returned status `$(`$resp.StatusCode)" -ForegroundColor Yellow
-        Write-Host "      Response: `$(`$resp.Content.Substring(0, [Math]::Min(200, `$resp.Content.Length)))" -ForegroundColor Yellow
+        Log-Message "WARNING: API returned status `$(`$resp.StatusCode)"
+        Log-Message "Response: `$(`$resp.Content.Substring(0, [Math]::Min(300, `$resp.Content.Length)))"
     }
 } catch {
-    Write-Host "      WARN: /api/admin/load call failed: `$(`$_.Exception.Message)" -ForegroundColor Yellow
-    Write-Host "      You can run Admin Full Load from the UI later." -ForegroundColor Gray
+    Log-Message "ERROR: API call failed: `$(`$_.Exception.Message)"
+    Log-Message "You can run Admin Full Load from the UI later"
 }
 
-# Stop the backend
-Write-Host "      Stopping backend..." -ForegroundColor Gray
+Log-Message "Stopping backend process"
 Stop-BackendProcess -Port `$port
-
-Write-Host "      Step 8 completed." -ForegroundColor Green
+Log-Message "Step 8 helper completed"
 "@
 
     try {
+        # Clear output log if exists
+        if (Test-Path $helperOutputPath) {
+            Remove-Item $helperOutputPath -Force
+        }
+        
         # Save helper script
         Set-Content -Path $helperScriptPath -Value $helperScript -Encoding UTF8
-        Write-Host "      Helper script created." -ForegroundColor Gray
+        Write-Host "      Helper script created at: $helperScriptPath" -ForegroundColor Gray
 
         # Run helper in normal user context (no elevation)
         Write-Host "      Launching normal-context helper process..." -ForegroundColor Gray
@@ -436,8 +486,23 @@ Write-Host "      Step 8 completed." -ForegroundColor Green
             -NoNewWindow `
             -Wait
 
-        if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne $null) {
-            Write-Host "      Step 8 helper exited with code $($proc.ExitCode)" -ForegroundColor Yellow
+        Write-Host "      Helper process exited with code: $($proc.ExitCode)" -ForegroundColor Gray
+        
+        # Read and display helper output
+        if (Test-Path $helperOutputPath) {
+            Write-Host ""
+            Write-Host "      === Helper Script Output ===" -ForegroundColor Gray
+            Get-Content $helperOutputPath | ForEach-Object {
+                Write-Host "      $_" -ForegroundColor Gray
+            }
+            Write-Host "      ===========================" -ForegroundColor Gray
+        }
+
+        if ($proc.ExitCode -eq 0) {
+            Write-Host "      ✓ Step 8 completed successfully" -ForegroundColor Green
+        } else {
+            Write-Host "      ⚠ Step 8 helper exited with code $($proc.ExitCode)" -ForegroundColor Yellow
+            Write-Host "      You can manually run Admin Load from the UI to complete data ingestion" -ForegroundColor Yellow
         }
     } catch {
         Write-Host "      Error during step 8: $($_.Exception.Message)" -ForegroundColor Red
