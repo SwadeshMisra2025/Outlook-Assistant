@@ -329,180 +329,189 @@ function Invoke-InitialDataLoad {
         [string]$RepoRoot
     )
 
-    Write-Host "[8/8] Starting backend for initial data load via API..." -ForegroundColor Yellow
-    Write-Host "      (Running backend in normal user context to enable Outlook COM access)" -ForegroundColor Gray
+    Write-Host "[8/8] Initial data load (Outlook → SQLite)..." -ForegroundColor Yellow
+    Write-Host "      (Running backend in normal user context for Outlook COM access)" -ForegroundColor Gray
 
-    $backendProc = $null
     $port = 8010
     $maxWaitSeconds = 120
     $helperScriptPath = Join-Path $env:TEMP "outlook_assistant_step8_$([guid]::NewGuid().ToString().Substring(0,8)).ps1"
     $helperOutputPath = Join-Path $logDir "step8_helper_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 
-    $helperScript = @"
-`$ErrorActionPreference = 'Continue'
-`$port = $port
-`$repoRoot = '$RepoRoot'
+    # --- Part 1: variable block (double-quoted — values expanded NOW from setup context) ---
+    $varBlock = @"
+`$port        = $port
 `$backendPath = '$BackendPath'
-`$pythonVenv = '$PythonVenvPath'
-`$maxWait = $maxWaitSeconds
-`$outputLog = '$helperOutputPath'
-
-function Log-Message {
-    param([string]\$Message)
-    `$msg = "[$(Get-Date -Format 'HH:mm:ss')] " + \$Message
-    (`$msg | Tee-Object -FilePath `$outputLog -Append) | Write-Host
-}
-
-Log-Message "===== Step 8 Helper Started ====="
-Log-Message "Port: `$port"
-Log-Message "Backend: `$backendPath"
-Log-Message "Python: `$pythonVenv"
-
-function Stop-BackendProcess {
-    param([int]\$Port)
-    try {
-        `$line = netstat -ano | findstr LISTENING | findstr ":\`$Port" | Out-String
-        if (`$line) {
-            `$parts = `$line -split '\s+' | Where-Object {`$_}
-            if (`$parts.Count -gt 0) {
-                `$pid = `$parts[-1]
-                Log-Message "Killing process `$pid on port `$Port"
-                taskkill /PID `$pid /F 2>&1 | Out-Null
-                Start-Sleep -Seconds 1
-            }
-        }
-    } catch {
-        Log-Message "Error stopping backend: `$(`$_.Exception.Message)"
-    }
-}
-
-Log-Message "Clearing port `$port if in use"
-Stop-BackendProcess -Port `$port
-
-Log-Message "Starting backend process"
-Set-Location `$backendPath
-Log-Message "Working directory: `$(Get-Location)"
-
-# Start backend and capture any immediate errors
-`$backendProc = `$null
-try {
-    `$backendProc = Start-Process -FilePath `$pythonVenv `
-        -ArgumentList @('-m', 'uvicorn', 'app.main:app', '--host', '127.0.0.1', '--port', "`$port", '--log-level', 'warning') `
-        -PassThru `
-        -NoNewWindow `
-        -ErrorAction Stop
-    Log-Message "Backend started with PID: `$(`$backendProc.Id)"
-} catch {
-    Log-Message "ERROR: Failed to start backend: `$(`$_.Exception.Message)"
-    exit 1
-}
-
-Log-Message "Waiting 4 seconds for backend to initialize"
-Start-Sleep -Seconds 4
-
-# Wait for backend to be ready
-Log-Message "Checking if backend is listening on port `$port"
-`$startTime = Get-Date
-`$ready = `$false
-`$attempts = 0
-while ((New-TimeSpan -Start `$startTime -End (Get-Date)).TotalSeconds -lt `$maxWait) {
-    `$attempts += 1
-    try {
-        Log-Message "Health check attempt `$attempts"
-        `$resp = Invoke-WebRequest -Uri "http://127.0.0.1:`$port/api/health" -UseBasicParsing -TimeoutSec 5 -ErrorAction SilentlyContinue
-        if (`$resp.StatusCode -eq 200) {
-            `$ready = `$true
-            Log-Message "Backend is ready (HTTP 200)"
-            break
-        }
-    } catch {
-        # Expected while backend is starting
-    }
-    Start-Sleep -Seconds 2
-}
-
-if (-not `$ready) {
-    Log-Message "ERROR: Backend did not respond within `$maxWait seconds"
-    Stop-BackendProcess -Port `$port
-    exit 1
-}
-
-# Call the API to trigger the full load
-Log-Message "Calling /api/admin/load endpoint with mode=full"
-try {
-    `$body = ConvertTo-Json @{ mode = 'full' }
-    Log-Message "Request body: `$body"
-    
-    `$resp = Invoke-WebRequest -Uri "http://127.0.0.1:`$port/api/admin/load" `
-        -Method Post `
-        -ContentType 'application/json' `
-        -Body `$body `
-        -UseBasicParsing `
-        -TimeoutSec 300 `
-        -ErrorAction SilentlyContinue
-
-    Log-Message "API response status: `$(`$resp.StatusCode)"
-    if (`$resp.StatusCode -eq 200) {
-        try {
-            `$respData = `$resp.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
-            Log-Message "Load completed successfully"
-            if (`$respData.meta) {
-                Log-Message "Emails upserted: `$(`$respData.meta.emails_upserted)"
-                Log-Message "Meetings upserted: `$(`$respData.meta.meetings_upserted)"
-            }
-        } catch {
-            Log-Message "Could not parse response JSON: `$(`$_.Exception.Message)"
-            Log-Message "Raw response: `$(`$resp.Content.Substring(0, [Math]::Min(500, `$resp.Content.Length)))"
-        }
-    } else {
-        Log-Message "WARNING: API returned status `$(`$resp.StatusCode)"
-        Log-Message "Response: `$(`$resp.Content.Substring(0, [Math]::Min(300, `$resp.Content.Length)))"
-    }
-} catch {
-    Log-Message "ERROR: API call failed: `$(`$_.Exception.Message)"
-    Log-Message "You can run Admin Full Load from the UI later"
-}
-
-Log-Message "Stopping backend process"
-Stop-BackendProcess -Port `$port
-Log-Message "Step 8 helper completed"
+`$pythonVenv  = '$PythonVenvPath'
+`$maxWait     = $maxWaitSeconds
+`$outputLog   = '$helperOutputPath'
 "@
 
+    # --- Part 2: script body (single-quoted — NO expansion, everything is a runtime literal) ---
+    $scriptBody = @'
+$ErrorActionPreference = 'Continue'
+
+function Log-Message {
+    param([string]$Message)
+    $ts  = Get-Date -Format 'HH:mm:ss'
+    $msg = "[$ts] $Message"
+    $msg | Tee-Object -FilePath $outputLog -Append | Write-Host
+}
+
+function Stop-PortProcess {
+    param([int]$Port)
     try {
-        # Clear output log if exists
-        if (Test-Path $helperOutputPath) {
-            Remove-Item $helperOutputPath -Force
+        $pids2 = @(netstat -ano | findstr LISTENING | findstr ":$Port" |
+                   ForEach-Object { ($_ -split '\s+')[-1] } | Select-Object -Unique)
+        foreach ($p in $pids2) {
+            Log-Message "Killing PID $p on port $Port"
+            taskkill /PID $p /F 2>&1 | Out-Null
         }
-        
-        # Save helper script
-        Set-Content -Path $helperScriptPath -Value $helperScript -Encoding UTF8
-        Write-Host "      Helper script created at: $helperScriptPath" -ForegroundColor Gray
+        if ($pids2.Count -gt 0) { Start-Sleep -Seconds 1 }
+    } catch {
+        Log-Message "Warning: could not clear port $Port — $($_.Exception.Message)"
+    }
+}
 
-        # Run helper in normal user context (no elevation)
-        Write-Host "      Launching normal-context helper process..." -ForegroundColor Gray
-        $proc = Start-Process -FilePath powershell.exe `
-            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$helperScriptPath`"" `
-            -PassThru `
-            -NoNewWindow `
-            -Wait
+Log-Message '===== Step 8 Helper Started ====='
+Log-Message "Port=$port  Backend=$backendPath"
+Log-Message "Python=$pythonVenv"
 
-        Write-Host "      Helper process exited with code: $($proc.ExitCode)" -ForegroundColor Gray
-        
-        # Read and display helper output
+# Reuse backend if already healthy on this port (avoids port conflict on retries)
+$alreadyRunning = $false
+try {
+    $chk = Invoke-WebRequest -Uri "http://127.0.0.1:$port/api/health" -UseBasicParsing -TimeoutSec 4 -ErrorAction Stop
+    if ($chk.StatusCode -eq 200) {
+        Log-Message "Backend already running on port $port — reusing it"
+        $alreadyRunning = $true
+    }
+} catch { }
+
+if (-not $alreadyRunning) {
+    Log-Message "Clearing port $port"
+    Stop-PortProcess -Port $port
+
+    Set-Location $backendPath
+    Log-Message "Starting uvicorn backend..."
+    try {
+        $bProc = Start-Process -FilePath $pythonVenv `
+            -ArgumentList @('-m','uvicorn','app.main:app','--host','127.0.0.1','--port',"$port",'--log-level','warning') `
+            -PassThru -NoNewWindow -ErrorAction Stop
+        Log-Message "Backend PID $($bProc.Id)"
+    } catch {
+        Log-Message "ERROR: Failed to start backend — $($_.Exception.Message)"
+        exit 1
+    }
+
+    $start = Get-Date
+    $ready = $false
+    while ((New-TimeSpan -Start $start -End (Get-Date)).TotalSeconds -lt $maxWait) {
+        try {
+            $h = Invoke-WebRequest -Uri "http://127.0.0.1:$port/api/health" -UseBasicParsing -TimeoutSec 4 -ErrorAction Stop
+            if ($h.StatusCode -eq 200) { $ready = $true; break }
+        } catch { }
+        Start-Sleep -Seconds 3
+    }
+    if (-not $ready) {
+        Log-Message "ERROR: backend not ready within $maxWait seconds"
+        Stop-PortProcess -Port $port
+        exit 1
+    }
+    Log-Message "Backend ready"
+}
+
+Log-Message "Calling /api/admin/load (mode=full)..."
+try {
+    $r = Invoke-WebRequest -Uri "http://127.0.0.1:$port/api/admin/load" `
+        -Method Post -ContentType 'application/json' -Body '{"mode":"full"}' `
+        -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+    Log-Message "Response: $($r.StatusCode)"
+    if ($r.StatusCode -eq 200) {
+        try {
+            $d = $r.Content | ConvertFrom-Json
+            $eTbl = @($d.tables | Where-Object { $_.table -eq 'emails' })[0]
+            $mTbl = @($d.tables | Where-Object { $_.table -eq 'meetings' })[0]
+            $eCount = if ($eTbl) { $eTbl.inserted } else { '?' }
+            $mCount = if ($mTbl) { $mTbl.inserted } else { '?' }
+            Log-Message "SUCCESS — emails=$eCount  meetings=$mCount  source=$($d.source_db)"
+        } catch {
+            Log-Message "Load returned 200 OK"
+        }
+    }
+} catch {
+    Log-Message "ERROR: /api/admin/load failed — $($_.Exception.Message)"
+    if (-not $alreadyRunning) { Stop-PortProcess -Port $port }
+    exit 1
+}
+
+if (-not $alreadyRunning) {
+    Log-Message "Stopping backend"
+    Stop-PortProcess -Port $port
+}
+Log-Message '===== Step 8 Done ====='
+exit 0
+'@
+
+    $fullScript = $varBlock + "`n" + $scriptBody
+
+    try {
+        if (Test-Path $helperOutputPath) { Remove-Item $helperOutputPath -Force }
+        Set-Content -Path $helperScriptPath -Value $fullScript -Encoding UTF8
+        Write-Host "      Helper script: $helperScriptPath" -ForegroundColor Gray
+
+        # Detect elevation. Start-Process inherits elevation, so if elevated we use
+        # a Scheduled Task at RunLevel Limited to get a genuine non-elevated process
+        # (Outlook COM requires non-elevated context).
+        $isElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+            [Security.Principal.WindowsBuiltInRole]::Administrator)
+
+        $exitCode = 1
+
+        if ($isElevated) {
+            Write-Host "      Elevated session — launching ingest via Scheduled Task (non-elevated)..." -ForegroundColor Gray
+            $taskName = "OA_Step8_$(Get-Date -Format 'HHmmss')"
+            $action   = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                            -Argument "-NoProfile -ExecutionPolicy Bypass -NonInteractive -File `"$helperScriptPath`""
+            $principal = New-ScheduledTaskPrincipal `
+                            -UserId "$env:USERDOMAIN\$env:USERNAME" `
+                            -LogonType Interactive `
+                            -RunLevel Limited
+            $settings  = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
+            Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal `
+                -Settings $settings -Force | Out-Null
+            Start-ScheduledTask -TaskName $taskName
+
+            $waited = 0
+            do {
+                Start-Sleep -Seconds 5; $waited += 5
+                $st = (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue).State
+            } while ($st -eq 'Running' -and $waited -lt ($maxWaitSeconds + 60))
+
+            $lastResult = (Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue).LastTaskResult
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+            Write-Host "      Scheduled task result code: $lastResult" -ForegroundColor Gray
+            $exitCode = if ($lastResult -eq 0) { 0 } else { 1 }
+        } else {
+            Write-Host "      Launching helper process (non-elevated)..." -ForegroundColor Gray
+            $proc = Start-Process powershell.exe `
+                -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$helperScriptPath`"" `
+                -PassThru -NoNewWindow -Wait
+            $exitCode = $proc.ExitCode
+            Write-Host "      Helper exited: $exitCode" -ForegroundColor Gray
+        }
+
+        # Display ingest log
         if (Test-Path $helperOutputPath) {
             Write-Host ""
-            Write-Host "      === Helper Script Output ===" -ForegroundColor Gray
-            Get-Content $helperOutputPath | ForEach-Object {
-                Write-Host "      $_" -ForegroundColor Gray
-            }
-            Write-Host "      ===========================" -ForegroundColor Gray
+            Write-Host "      === Ingest Log ===" -ForegroundColor Gray
+            Get-Content $helperOutputPath | ForEach-Object { Write-Host "      $_" -ForegroundColor Gray }
+            Write-Host "      ==================" -ForegroundColor Gray
         }
 
-        if ($proc.ExitCode -eq 0) {
-            Write-Host "      ✓ Step 8 completed successfully" -ForegroundColor Green
+        if ($exitCode -eq 0) {
+            Write-Host "      ✓ Initial data load completed successfully" -ForegroundColor Green
         } else {
-            Write-Host "      ⚠ Step 8 helper exited with code $($proc.ExitCode)" -ForegroundColor Yellow
-            Write-Host "      You can manually run Admin Load from the UI to complete data ingestion" -ForegroundColor Yellow
+            Write-Host "      ⚠ Data load finished with errors (code $exitCode)" -ForegroundColor Yellow
+            Write-Host "        Use Admin tab → Full Load to retry after setup completes" -ForegroundColor Yellow
         }
     } catch {
         Write-Host "      Error during step 8: $($_.Exception.Message)" -ForegroundColor Red
